@@ -86,7 +86,7 @@ def _read_wav(path: str) -> tuple[bytes, int, int]:
 
 
 async def _publish_wav(source: rtc.AudioSource, path: str) -> None:
-    """Push all PCM frames from a WAV file into the AudioSource.
+    """Push all PCM frames from a WAV file into the AudioSource in ~20ms chunks.
 
     The installed livekit-rtc AudioSource.capture_frame signature:
         async def capture_frame(self, frame: AudioFrame) -> None
@@ -94,11 +94,25 @@ async def _publish_wav(source: rtc.AudioSource, path: str) -> None:
     AudioFrame constructor signature (verified against installed version):
         AudioFrame(data, sample_rate, num_channels, samples_per_channel)
     where samples_per_channel = len(data) // (2 * num_channels).
+
+    Streaming in 20ms chunks mimics a real microphone feed and avoids locking
+    per-turn pacing to the full audio duration with a single large frame.
     """
     data, sr, ch = _read_wav(path)
-    samples_per_channel = len(data) // (2 * ch)
-    frame = rtc.AudioFrame(data, sr, ch, samples_per_channel)
-    await source.capture_frame(frame)
+    bytes_per_sample = 2  # PCM16
+    samples_per_chunk = int(sr * 0.02)  # 20ms worth of samples
+    chunk_bytes_size = samples_per_chunk * bytes_per_sample * ch
+
+    offset = 0
+    while offset < len(data):
+        chunk = data[offset : offset + chunk_bytes_size]
+        samples_in_this_chunk = len(chunk) // (bytes_per_sample * ch)
+        if samples_in_this_chunk == 0:
+            break
+        frame = rtc.AudioFrame(chunk, sr, ch, samples_in_this_chunk)
+        await source.capture_frame(frame)
+        offset += len(chunk)
+
     # Wait for the audio to drain from the source queue before returning so
     # the harness pacing stays in sync with actual audio playback time.
     await source.wait_for_playout()
@@ -235,6 +249,11 @@ async def run_harness(subprocess_mode: bool = False) -> str | None:
     await room.disconnect()
     print("Disconnected from room.")
 
+    try:
+        await source.aclose()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] source.aclose() raised {exc!r} — continuing teardown.")
+
     return None  # breakdown captured by caller in subprocess mode
 
 
@@ -265,7 +284,7 @@ async def run_with_subprocess() -> None:
     async def read_worker_output() -> None:
         nonlocal breakdown_json
         assert proc.stdout is not None
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         while True:
             line = await loop.run_in_executor(None, proc.stdout.readline)
             if not line:
@@ -285,14 +304,18 @@ async def run_with_subprocess() -> None:
     await run_harness(subprocess_mode=True)
 
     # Wait for the worker to print its breakdown (up to 15 s after harness ends).
-    deadline = asyncio.get_event_loop().time() + 15.0
-    while breakdown_json is None and asyncio.get_event_loop().time() < deadline:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 15.0
+    while breakdown_json is None and loop.time() < deadline:
         await asyncio.sleep(0.5)
 
     proc.terminate()
     try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
+        await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(None, proc.wait),
+            timeout=5.0,
+        )
+    except (asyncio.TimeoutError, subprocess.TimeoutExpired):
         proc.kill()
 
     reader_task.cancel()
@@ -344,8 +367,20 @@ def main() -> None:
         # Standalone: just drive the room; operator reads the worker log.
         with contextlib.suppress(KeyboardInterrupt):
             asyncio.run(run_harness(subprocess_mode=False))
+        print()
+        print("=" * 60)
+        print("STANDALONE MODE — GATE NOT EVALUATED AUTOMATICALLY")
+        print("=" * 60)
         print(
-            "\nHarness finished (standalone mode).\n"
-            "Read LATENCY_BREAKDOWN_P50 from the worker log and check: total < 0.800 s.\n"
-            "Run with --subprocess to have the harness capture and assert the gate automatically."
+            "The harness has finished publishing audio to the room,\n"
+            "but the pass/fail gate was NOT checked by this process.\n"
+            "\n"
+            "ACTION REQUIRED:\n"
+            "  1. Open the worker log (terminal running `python -m tara_agent.worker dev`).\n"
+            "  2. Find the line:  LATENCY_BREAKDOWN_P50={...}\n"
+            "  3. Manually verify:  total < 0.800 s  to PASS the Phase-1 gate.\n"
+            "\n"
+            "To have the harness capture and assert the gate automatically,\n"
+            "re-run with:  python tools/latency_harness.py --subprocess"
         )
+        print("=" * 60)
