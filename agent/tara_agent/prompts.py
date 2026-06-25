@@ -13,6 +13,7 @@ def build_system_prompt(blob: SessionBlob) -> str:
         f"=== CANDIDATE RESUME ===\n{blob.resume_text}\n"
     )
 
+# OFF-PATH classifier call: comma-separated output is parsed by CoverageTracker and is never spoken.
 def build_coverage_prompt(skills: list[str], answer: str) -> str:
     return (
         "Given this candidate answer, return ONLY a comma-separated list of "

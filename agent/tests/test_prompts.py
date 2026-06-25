@@ -7,7 +7,7 @@ def test_system_prompt_includes_static_block():
     assert "Python" in p and "SQL" in p
     assert "RESUME_X" in p and "JD_Y" in p
     assert "one question at a time" in p.lower()
-    assert "json" in p.lower()  # must instruct: do NOT output JSON
+    assert "do not output json" in p.lower()  # must instruct: do NOT output JSON
 
 def test_coverage_prompt_lists_skills_and_answer():
     p = build_coverage_prompt(["Python", "SQL"], "I used pandas")
