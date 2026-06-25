@@ -2,6 +2,12 @@ import json
 import time
 
 class TranscriptStore:
+    """Redis-backed transcript store for a single room.
+
+    Designed for a single appender per room (one worker, one event loop) within Phase 1.
+    The truncate_last method assumes no concurrent append to the same room during execution.
+    No locking or transactions required; single-appender design is sufficient.
+    """
     def __init__(self, redis, room: str, ttl_seconds: int = 7200):
         self._redis = redis
         self._key = f"transcript:{room}"
@@ -16,14 +22,15 @@ class TranscriptStore:
         await self._redis.expire(self._seq_key, self._ttl)
         return seq
 
-    async def truncate_last(self, speaker: str, spoken_text: str) -> None:
+    async def truncate_last(self, speaker: str, spoken_text: str) -> bool:
         raw = await self._redis.lrange(self._key, 0, -1)
         for idx in range(len(raw) - 1, -1, -1):
             line = json.loads(raw[idx])
             if line["speaker"] == speaker:
                 line["text"] = spoken_text
                 await self._redis.lset(self._key, idx, json.dumps(line))
-                return
+                return True
+        return False
 
     async def assemble(self) -> list[dict]:
         raw = await self._redis.lrange(self._key, 0, -1)

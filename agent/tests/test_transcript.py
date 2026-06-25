@@ -27,10 +27,20 @@ async def test_truncate_last_replaces_partial_line(redis):
     ts = TranscriptStore(redis, room="r3")
     await ts.append("candidate", "answer")
     await ts.append("tara", "This is a very long question that was")
-    await ts.truncate_last("tara", "This is a very long question")
+    result = await ts.truncate_last("tara", "This is a very long question")
+    assert result is True
     lines = await ts.assemble()
     assert lines[-1]["text"] == "This is a very long question"
     assert len(lines) == 2
+
+async def test_truncate_last_returns_false_when_speaker_absent(redis):
+    ts = TranscriptStore(redis, room="r5")
+    await ts.append("candidate", "answer")
+    result = await ts.truncate_last("tara", "x")
+    assert result is False
+    lines = await ts.assemble()
+    assert len(lines) == 1
+    assert lines[0]["speaker"] == "candidate"
 
 async def test_ttl_is_set(redis):
     ts = TranscriptStore(redis, room="r4", ttl_seconds=7200)
