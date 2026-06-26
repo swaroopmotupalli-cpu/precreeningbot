@@ -10,6 +10,7 @@ DO NOT score on the hot path — scoring (Task 11) runs offline after session en
 """
 import asyncio
 import json
+import time
 import warnings
 import logging
 
@@ -53,6 +54,35 @@ async def entrypoint(ctx: JobContext):
 
     redis = aioredis.from_url(s.redis_url, decode_responses=True)
     mongo_col = AsyncIOMotorClient(s.mongodb_uri)["tara"]["aiInterview"]
+
+    # --- Admission limiter -------------------------------------------------------
+    from tara_agent.limiter import Limiter, Caps
+    limiter = Limiter(
+        redis,
+        caps=Caps(
+            global_=s.max_global_sessions,
+            gemini_tpm=s.gemini_tpm_budget,
+            stt_streams=s.stt_stream_budget,
+            tts_streams=s.tts_stream_budget,
+        ),
+        reservation_ttl_ms=s.reservation_lease_ttl * 1000,
+        heartbeat_ttl_ms=s.heartbeat_lease_ttl * 1000,
+    )
+    now_ms = lambda: int(time.time() * 1000)  # epoch-ms matching Node Date.now()
+
+    _limiter_log = logging.getLogger("tara.limiter")
+
+    async def _heartbeat_loop():
+        while not done.is_set():
+            await limiter.heartbeat(ctx.room.name, now_ms())
+            await asyncio.sleep(s.heartbeat_interval)
+
+    async def _reaper_loop():
+        while not done.is_set():
+            for rc in await limiter.reap(now_ms()):
+                _limiter_log.info("reclaim %s reason=%s", rc.room, rc.reason)
+            await asyncio.sleep(s.heartbeat_interval)
+    # -----------------------------------------------------------------------------
 
     # Convention: room name == session id stored in Redis.
     session_id = ctx.room.name
@@ -157,6 +187,8 @@ async def entrypoint(ctx: JobContext):
         mongo_write_fn=lambda doc: mongo_col.insert_one(doc),
         settings=s,
         on_end=done.set,
+        limiter=limiter,
+        room=ctx.room.name,
     )
 
     # Capture Tara's spoken lines into the transcript as they are committed.
@@ -214,12 +246,32 @@ async def entrypoint(ctx: JobContext):
     # session.start automatically calls ctx.connect() when a room is passed.
     await session.start(agent=agent, room=ctx.room)
 
+    # Promote the reservation to a Tier-2 heartbeat lease now that the agent has
+    # joined (sets both mark_heartbeat and mark_participant flags).
+    await limiter.heartbeat(ctx.room.name, now_ms(),
+                            mark_heartbeat=True, mark_participant=True)
+
+    # Start background heartbeat and reaper loops.
+    hb = asyncio.create_task(_heartbeat_loop())
+    rp = asyncio.create_task(_reaper_loop())
+
+    # Release the lease immediately when the candidate disconnects.
+    # "participant_disconnected" is the canonical livekit-rtc event name (verified
+    # against installed livekit-rtc room.py — emitted as
+    # self.emit("participant_disconnected", rparticipant)).
+    @ctx.room.on("participant_disconnected")
+    def _on_part_left(p):
+        asyncio.create_task(limiter.release(ctx.room.name))
+        done.set()
+
     # Greet the candidate and ask the first question.
     await session.generate_reply(
         instructions="Greet the candidate warmly and ask your first interview question."
     )
 
     await done.wait()
+    hb.cancel()
+    rp.cancel()
     _flush_breakdown()
 
 
