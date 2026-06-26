@@ -236,6 +236,7 @@ async def entrypoint(ctx: JobContext):
     # the entrypoint so the breakdown is printed well inside the harness window.
     @session.on("close")
     def _on_close(*_a):
+        asyncio.create_task(limiter.release(ctx.room.name))
         done.set()
 
     async def _flush_on_shutdown():
