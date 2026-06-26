@@ -29,7 +29,8 @@ async function mintToken(room, identity) {
 
 app.post("/sessions", async (req, res) => {
   try {
-    const result = await createSession(redis, mintToken, limiter, req.body);
+    const result = await createSession(redis, mintToken, limiter, req.body,
+                                       { rejectedBlobTtl: cfg.rejectedBlobTtl });
     if (result.status === "queued") {
       return res.status(503).json(result);
     }

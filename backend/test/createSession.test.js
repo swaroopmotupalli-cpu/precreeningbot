@@ -28,11 +28,30 @@ test("rejects missing required fields", async () => {
 });
 
 test("rejected admission returns queued with bucket and no token", async () => {
-  const redis = { set: async () => {} };
+  const redis = { set: async () => {}, expire: async () => {} };
   const limiter = { tryAdmit: async () => ({ admitted: false, bucket: "gemini_tpm" }) };
   const out = await createSession(redis, () => "tok", limiter, {
     contestId: "c", candidateId: "u", skills: ["x"], resumeText: "r", jdText: "j" });
   expect(out.status).toBe("queued");
   expect(out.bucket).toBe("gemini_tpm");
   expect(out.token).toBeUndefined();
+});
+
+test("rejected session blob is re-expired to a short TTL", async () => {
+  const calls = [];
+  const redis = {
+    set: async (k, v, ...rest) => { calls.push(["set", k, ...rest]); },
+    expire: async (k, ttl) => { calls.push(["expire", k, ttl]); },
+  };
+  const fakeLimiterRejected = { tryAdmit: async () => ({ admitted: false, bucket: "global" }) };
+  const tokenFactory = () => "tok";
+  const out = await createSession(redis, tokenFactory, fakeLimiterRejected, {
+    contestId: "c1", candidateId: "u1", skills: ["Python"],
+    resumeText: "r", jdText: "j",
+  }, { rejectedBlobTtl: 120 });
+  expect(out.status).toBe("queued");
+  // the blob TTL was shortened on reject
+  const expireCall = calls.find((c) => c[0] === "expire");
+  expect(expireCall).toBeTruthy();
+  expect(expireCall[2]).toBe(120);
 });
