@@ -87,6 +87,13 @@ async def entrypoint(ctx: JobContext):
         ),
         llm=google.LLM(
             model=s.gemini_model,
+            # LATENCY LEVER (pending infra): base TTFT from India to the global
+            # Gemini Developer API is ~1.3s. Routing via Vertex AI in-region
+            # (vertexai=True, project=$GOOGLE_CLOUD_PROJECT, location="asia-south1")
+            # should cut it the way the STT region fix did — but the Vertex AI API
+            # (aiplatform.googleapis.com) must first be ENABLED on the project
+            # (currently returns 403 SERVICE_DISABLED). Until then, stay on the
+            # Developer API (api_key from env).
             temperature=0.6,  # PLAIN TEXT — no JSON mode
             # Minimize model "thinking" — Gemini 3 thinks by default, inflating
             # TTFT with no benefit for short conversational questions. Gemini 3
