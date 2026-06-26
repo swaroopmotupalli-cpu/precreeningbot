@@ -11,7 +11,7 @@ async def test_cap_holds_then_noshow_reclaim_frees_a_slot(real_redis):
     lim = make(real_redis, cap=2)
     assert (await lim.try_admit("a", 1000)).admitted
     assert (await lim.try_admit("b", 2000)).admitted             # b admitted later (expires at 47000)
-    assert not (await lim.try_admit("c", 1000)).admitted          # cap holds
+    assert not (await lim.try_admit("c", 2001)).admitted          # cap holds
     # 'a' is a no-show; next admit after its lease lapses reaps it inline and succeeds
     c2 = await lim.try_admit("c", now_ms=46001)
     assert c2.admitted                                            # slot freed by inline reap
@@ -24,6 +24,8 @@ async def test_crash_vs_false_reclaim_distinguished(real_redis):
     await lim.try_admit("dropped", 1000)
     await lim.heartbeat("dropped", 1000, mark_heartbeat=True, mark_participant=True)
     out = {r.room: r.reason for r in await lim.reap(now_ms=61001)}
+    assert len(out) == 2                                           # exactly the two expired reservations
+    assert "no_show" not in out.values()                           # both had heartbeats, neither misclassified
     assert out["crasher"] == "crash"
     assert out["dropped"] == "false"                              # hard-gate signal
 
