@@ -7,10 +7,7 @@ Every exit path funnels through teardown(), which fires on_teardown AT MOST ONCE
 """
 from __future__ import annotations
 import asyncio
-import logging
 from typing import Awaitable, Callable
-
-log = logging.getLogger("tara.lifecycle")
 
 
 class SessionLifecycle:

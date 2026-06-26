@@ -69,3 +69,13 @@ async def test_teardown_is_exactly_once():
     await lc.teardown("path_a")
     await lc.teardown("path_b")
     assert ev["teardown"] == ["path_a"]  # second call is a no-op
+
+
+async def test_teardown_exactly_once_under_concurrent_calls():
+    async def sleep(_):
+        return
+    lc, ev = _make(0, sleep)
+    # Two teardown calls racing concurrently must still fire on_teardown exactly once.
+    await asyncio.gather(lc.teardown("race_a"), lc.teardown("race_b"))
+    assert len(ev["teardown"]) == 1
+    assert ev["teardown"][0] in ("race_a", "race_b")
