@@ -359,6 +359,13 @@ async def entrypoint(ctx: JobContext):
                                                   mark_participant=True))
         asyncio.create_task(lifecycle.participant_joined(p.identity))
 
+    # The agent is usually dispatched into a room the candidate is ALREADY in,
+    # so participant_connected may have fired before the handler above registered.
+    # Replay it for any already-present remote participant so the candidate is
+    # captured + the participant flag is set (B2) and disconnects are tracked.
+    for _p in list(ctx.room.remote_participants.values()):
+        _on_part_joined(_p)
+
     # Candidate-only: a non-candidate (future proctor/observer) leaving must
     # NOT start the grace timer or tear down (B3 guard inside SessionLifecycle).
     # "participant_disconnected" is the canonical livekit-rtc event name (verified
