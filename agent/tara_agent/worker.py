@@ -14,6 +14,8 @@ import time
 import warnings
 import logging
 
+import prometheus_client
+
 import redis.asyncio as aioredis
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -45,12 +47,35 @@ from tara_agent.coverage import CoverageTracker
 from tara_agent.gemini import make_classify_fn
 from tara_agent.latency import LatencyCollector
 from tara_agent.interview_agent import InterviewAgent
+from tara_agent.metrics_export import TaraMetrics
 
 log = logging.getLogger("tara.worker")
+
+# ---------------------------------------------------------------------------
+# Module-level Prometheus exporter — one instance per worker process.
+# _ensure_metrics_server is idempotent: the LiveKit worker may run multiple
+# jobs in the same process; the HTTP server must only be started once.
+# ---------------------------------------------------------------------------
+_METRICS = TaraMetrics()
+_metrics_server_started = False
+
+
+def _ensure_metrics_server(port: int) -> None:
+    global _metrics_server_started
+    if not _metrics_server_started:
+        prometheus_client.start_http_server(port, registry=_METRICS.registry)
+        _metrics_server_started = True
 
 
 async def entrypoint(ctx: JobContext):
     s = get_settings()
+    _ensure_metrics_server(s.metrics_port)
+    caps_dict = {
+        "global": s.max_global_sessions,
+        "gemini_tpm": s.gemini_tpm_budget,
+        "stt_streams": s.stt_stream_budget,
+        "tts_streams": s.tts_stream_budget,
+    }
 
     redis = aioredis.from_url(s.redis_url, decode_responses=True)
     mongo_col = AsyncIOMotorClient(s.mongodb_uri)["tara"]["aiInterview"]
@@ -82,6 +107,11 @@ async def entrypoint(ctx: JobContext):
             for rc in await limiter.reap(now_ms()):
                 _limiter_log.info("reclaim %s reason=%s", rc.room, rc.reason)
             await asyncio.sleep(s.heartbeat_interval)
+
+    async def _metrics_sync_loop():
+        while not done.is_set():
+            _METRICS.sync_limiter(await limiter.metrics(), caps_dict)
+            await asyncio.sleep(s.metric_scrape_interval)
     # -----------------------------------------------------------------------------
 
     # Convention: room name == session id stored in Redis.
@@ -171,12 +201,14 @@ async def entrypoint(ctx: JobContext):
         elif isinstance(m, metrics.TTSMetrics):
             pending["ttfb"] = m.ttfb
             if {"eou", "ttft", "ttfb"} <= pending.keys():
+                total = pending["eou"] + pending["ttft"] + pending["ttfb"]
                 latency.record_turn(
                     pending["eou"],
                     pending.get("stt", 0.0),
                     pending["ttft"],
                     pending["ttfb"],
                 )
+                _METRICS.observe_turn(total, pending["ttft"])
                 pending.clear()
 
     agent = InterviewAgent(
@@ -225,6 +257,7 @@ async def entrypoint(ctx: JobContext):
         if _flushed["v"]:
             return
         _flushed["v"] = True
+        _METRICS.session_ended()
         try:
             payload = json.dumps(latency.breakdown_p50())
         except Exception as e:  # empty collector (no turns) — report, don't crash
@@ -246,15 +279,17 @@ async def entrypoint(ctx: JobContext):
 
     # session.start automatically calls ctx.connect() when a room is passed.
     await session.start(agent=agent, room=ctx.room)
+    _METRICS.session_started()
 
     # Promote the reservation to a Tier-2 heartbeat lease now that the agent has
     # joined (sets both mark_heartbeat and mark_participant flags).
     await limiter.heartbeat(ctx.room.name, now_ms(),
                             mark_heartbeat=True, mark_participant=True)
 
-    # Start background heartbeat and reaper loops.
+    # Start background heartbeat, reaper, and metrics-sync loops.
     hb = asyncio.create_task(_heartbeat_loop())
     rp = asyncio.create_task(_reaper_loop())
+    ms = asyncio.create_task(_metrics_sync_loop())
 
     # Release the lease immediately when the candidate disconnects.
     # "participant_disconnected" is the canonical livekit-rtc event name (verified
@@ -273,6 +308,7 @@ async def entrypoint(ctx: JobContext):
     await done.wait()
     hb.cancel()
     rp.cancel()
+    ms.cancel()
     _flush_breakdown()
 
 

@@ -33,6 +33,17 @@ def test_admission_settings_defaults(monkeypatch):
     assert s.heartbeat_interval == 15
     assert s.heartbeat_lease_ttl == 60
 
+def test_metrics_settings_defaults(monkeypatch):
+    for k, v in {
+        "GEMINI_API_KEY": "g", "GOOGLE_APPLICATION_CREDENTIALS": "/c.json",
+        "REDIS_URL": "redis://x", "MONGODB_URI": "mongodb://x",
+        "LIVEKIT_URL": "wss://x", "LIVEKIT_API_KEY": "k", "LIVEKIT_API_SECRET": "s",
+    }.items():
+        monkeypatch.setenv(k, v)
+    s = Settings()
+    assert s.metrics_port == 9091
+    assert s.metric_scrape_interval == 5
+
 def test_admission_settings_override(monkeypatch):
     for k, v in {
         "GEMINI_API_KEY": "g", "GOOGLE_APPLICATION_CREDENTIALS": "/c.json",
