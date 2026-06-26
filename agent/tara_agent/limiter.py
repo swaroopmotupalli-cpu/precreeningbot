@@ -28,7 +28,8 @@ class Limiter:
         self._hb_ttl = heartbeat_ttl_ms
         self._admit = redis.register_script((_LUA_DIR / "admit.lua").read_text())
         self._refresh = redis.register_script((_LUA_DIR / "refresh.lua").read_text())
-        # release/reap registered in later tasks
+        self._release = redis.register_script((_LUA_DIR / "release.lua").read_text())
+        # reap registered in later tasks
 
     def _keys(self):
         p = self._p
@@ -55,4 +56,12 @@ class Limiter:
             keys=[f"{self._p}:reservations"],
             args=[room, now_ms, self._hb_ttl,
                   1 if mark_heartbeat else 0, 1 if mark_participant else 0, self._p])
+        return int(res) == 1
+
+    async def release(self, room: str) -> bool:
+        res = await self._release(
+            keys=[f"{self._p}:count:global", f"{self._p}:count:gemini_tpm",
+                  f"{self._p}:count:stt_streams", f"{self._p}:count:tts_streams",
+                  f"{self._p}:reservations"],
+            args=[room, self._p])
         return int(res) == 1
