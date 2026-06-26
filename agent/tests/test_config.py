@@ -19,3 +19,28 @@ def test_settings_missing_required_raises(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with pytest.raises(Exception):
         Settings(_env_file=None)
+
+def test_admission_settings_defaults(monkeypatch):
+    for k, v in {
+        "GEMINI_API_KEY": "g", "GOOGLE_APPLICATION_CREDENTIALS": "/c.json",
+        "REDIS_URL": "redis://x", "MONGODB_URI": "mongodb://x",
+        "LIVEKIT_URL": "wss://x", "LIVEKIT_API_KEY": "k", "LIVEKIT_API_SECRET": "s",
+    }.items():
+        monkeypatch.setenv(k, v)
+    s = Settings()
+    assert s.max_global_sessions == 110
+    assert s.reservation_lease_ttl == 45
+    assert s.heartbeat_interval == 15
+    assert s.heartbeat_lease_ttl == 60
+
+def test_admission_settings_override(monkeypatch):
+    for k, v in {
+        "GEMINI_API_KEY": "g", "GOOGLE_APPLICATION_CREDENTIALS": "/c.json",
+        "REDIS_URL": "redis://x", "MONGODB_URI": "mongodb://x",
+        "LIVEKIT_URL": "wss://x", "LIVEKIT_API_KEY": "k", "LIVEKIT_API_SECRET": "s",
+        "MAX_GLOBAL_SESSIONS": "200", "GEMINI_TPM_BUDGET": "42",
+    }.items():
+        monkeypatch.setenv(k, v)
+    s = Settings()
+    assert s.max_global_sessions == 200
+    assert s.gemini_tpm_budget == 42
