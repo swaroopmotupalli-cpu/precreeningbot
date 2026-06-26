@@ -232,6 +232,30 @@ async def entrypoint(ctx: JobContext):
         if getattr(item, "role", None) == "assistant":
             asyncio.create_task(agent.on_tara_line(item.text_content or ""))
 
+    # Barge-in audit: when the candidate interrupts Tara mid-sentence, truncate
+    # Tara's stored line to only what was actually spoken.
+    #
+    # LiveKit Agents 1.6.4 evidence (agent_activity.py lines 2573-2611 and
+    # 3012-3038):
+    #   When speech_handle.interrupted is True, the framework sets forwarded_text
+    #   to playback_ev.synchronized_transcript (the audio-synchronized spoken
+    #   boundary from TTS playout) BEFORE creating the ChatMessage and emitting
+    #   conversation_item_added. Therefore item.text_content on an interrupted
+    #   assistant item already contains ONLY the words actually spoken — not the
+    #   full intended sentence.
+    #
+    # The ChatMessage.interrupted field (chat_context.py line 321) is set to
+    #   speech_handle.interrupted, so gating on it reliably identifies barge-in
+    #   items. Passing item.text_content (already truncated by the framework)
+    #   to on_interruption overwrites the line on_tara_line recorded (which
+    #   also used text_content from the same event — belt-and-suspenders: both
+    #   see the same spoken boundary, so the truncation is idempotent).
+    @session.on("conversation_item_added")
+    def _on_item_audit(ev):
+        item = ev.item
+        if getattr(item, "role", None) == "assistant" and getattr(item, "interrupted", False):
+            asyncio.create_task(agent.on_interruption(item.text_content or ""))
+
     # Signal "Tara finished her turn" to any participant (the latency harness
     # waits on this so it never publishes the next answer over Tara's speech).
     # Only fire on speaking → listening so the greeting counts but the initial
