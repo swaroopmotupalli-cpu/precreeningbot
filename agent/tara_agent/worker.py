@@ -74,13 +74,15 @@ async def entrypoint(ctx: JobContext):
 
     session = AgentSession(
         stt=google.STT(
-            # chirp_2 is regional and supports ONE language per stream; multi-language
-            # is only offered in us/eu/global where chirp_2 is absent. Indian-English
-            # candidates → primary language (en-IN) + chirp_2 in a region that hosts it.
-            languages=s.interview_languages[0],
-            model="chirp_2",
-            location="us-central1",
-            spoken_punctuation=False,
+            # Proven config from the prior production app.py: STT V2 streaming,
+            # model "latest_long" in the "global" location. global avoids the
+            # cross-region (India→us-central1) round trip that made chirp_2 ~4s,
+            # AND allows multi-language recognition (en-IN + en-US), which the
+            # regional chirp_2 endpoints do not.
+            languages=s.interview_languages,
+            model="latest_long",
+            location="global",
+            interim_results=True,
         ),
         llm=google.LLM(model=s.gemini_model, temperature=0.6),  # PLAIN TEXT — no JSON mode
         tts=google.TTS(                                         # Chirp3-HD, use_streaming=True default
@@ -88,6 +90,12 @@ async def entrypoint(ctx: JobContext):
             language="-".join(s.tts_voice.split("-")[:2]),      # match voice locale (e.g. en-IN) — must not default to en-US
         ),
         turn_detection=turn_detector,
+        # Cap how long we wait after speech stops before committing the turn.
+        # The semantic detector still decides; these bound its endpointing wait
+        # (default max was hitting 3.0s when the model was unsure). 0.3s floor
+        # for confident ends, 1.5s ceiling for uncertain ones.
+        min_endpointing_delay=0.3,
+        max_endpointing_delay=1.5,
     )
 
     # ---------------------------------------------------------------------------
