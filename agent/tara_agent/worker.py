@@ -26,6 +26,7 @@ from livekit.agents import (
     MetricsCollectedEvent,
 )
 from livekit.plugins import google
+from google.genai import types as _genai_types
 
 # MultilingualModel requires a live job context (inference executor) to instantiate;
 # it is therefore created inside entrypoint(), not at module level.
@@ -84,7 +85,16 @@ async def entrypoint(ctx: JobContext):
             location="global",
             interim_results=True,
         ),
-        llm=google.LLM(model=s.gemini_model, temperature=0.6),  # PLAIN TEXT — no JSON mode
+        llm=google.LLM(
+            model=s.gemini_model,
+            temperature=0.6,  # PLAIN TEXT — no JSON mode
+            # Minimize model "thinking" — Gemini 3 thinks by default, inflating
+            # TTFT with no benefit for short conversational questions. Gemini 3
+            # uses thinking_level (not thinking_budget); "low" is the minimum.
+            # (Caching is NOT a lever here: the whole prompt is ~141-606 tokens,
+            # far below Gemini's cache minimum — cached_tokens=0 every turn.)
+            thinking_config=_genai_types.ThinkingConfig(thinking_level="low"),
+        ),
         tts=google.TTS(                                         # Chirp3-HD, use_streaming=True default
             voice_name=s.tts_voice,
             language="-".join(s.tts_voice.split("-")[:2]),      # match voice locale (e.g. en-IN) — must not default to en-US
@@ -118,6 +128,10 @@ async def entrypoint(ctx: JobContext):
             pending["stt"] = m.transcription_delay
         elif isinstance(m, metrics.LLMMetrics):
             pending["ttft"] = m.ttft
+            log.info(
+                "LLM_DIAG ttft=%.3f prompt_tokens=%s cached_tokens=%s completion=%s",
+                m.ttft, m.prompt_tokens, m.prompt_cached_tokens, m.completion_tokens,
+            )
         elif isinstance(m, metrics.TTSMetrics):
             pending["ttfb"] = m.ttfb
             if {"eou", "ttft", "ttfb"} <= pending.keys():
