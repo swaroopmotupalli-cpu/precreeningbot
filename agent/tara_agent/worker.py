@@ -10,6 +10,7 @@ DO NOT score on the hot path — scoring (Task 11) runs offline after session en
 """
 import asyncio
 import json
+import signal
 import time
 import warnings
 import logging
@@ -39,6 +40,7 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
     from livekit.plugins.turn_detector.multilingual import MultilingualModel  # noqa: E402
 
+from tara_agent.drain import DrainController
 from tara_agent.config import get_settings
 from tara_agent.session_store import load_session
 from tara_agent.prompts import build_system_prompt
@@ -58,6 +60,7 @@ log = logging.getLogger("tara.worker")
 # jobs in the same process; the HTTP server must only be started once.
 # ---------------------------------------------------------------------------
 _METRICS = TaraMetrics()
+_DRAIN = DrainController()
 _metrics_server_started = False
 
 
@@ -301,6 +304,7 @@ async def entrypoint(ctx: JobContext):
         _flush_breakdown()                       # latency breakdown, once-guarded
         await limiter.release(ctx.room.name)     # idempotent (ZSCORE-guarded Lua)
         done.set()
+        _DRAIN.unregister()
 
     async def _resume():
         # Candidate reconnected within grace: welcome back + re-ask the in-flight
@@ -337,6 +341,18 @@ async def entrypoint(ctx: JobContext):
     await session.start(agent=agent, room=ctx.room)
     _METRICS.session_started()
     _started["v"] = True
+
+    _DRAIN.register()
+
+    def _on_sigterm():
+        _DRAIN.request_drain()
+        # let in-flight interviews finish; the pod's terminationGracePeriod bounds it
+        asyncio.create_task(_DRAIN.wait_drained(timeout=110))
+
+    try:
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, _on_sigterm)
+    except (NotImplementedError, RuntimeError):
+        pass  # add_signal_handler unavailable (e.g. non-main thread) — SIGTERM still drains via LiveKit
 
     # Promote to Tier-2 heartbeat lease at agent join (heartbeat flag only;
     # participant flag is set when the CANDIDATE actually joins — see below).
