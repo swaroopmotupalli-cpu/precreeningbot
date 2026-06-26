@@ -226,9 +226,11 @@ async def run_harness(subprocess_mode: bool = False) -> str | None:
     source = rtc.AudioSource(48000, 1)
     # LocalAudioTrack.create_audio_track(name, source) — verified; returns LocalAudioTrack.
     track = rtc.LocalAudioTrack.create_audio_track("candidate-mic", source)
-    # publish_track(track, options=TrackPublishOptions()) — verified; returns LocalTrackPublication.
-    await room.local_participant.publish_track(track)
-    print("Audio track published.")
+    # Must publish as SOURCE_MICROPHONE — the AgentSession only routes microphone
+    # audio to STT; a default (SOURCE_UNKNOWN) track is silently ignored.
+    opts = rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
+    await room.local_participant.publish_track(track, opts)
+    print("Audio track published (source=MICROPHONE).")
 
     # ------------------------------------------------------------------
     # 3. Publish WAV utterances, one per question slot
@@ -384,3 +386,7 @@ def main() -> None:
             "re-run with:  python tools/latency_harness.py --subprocess"
         )
         print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()

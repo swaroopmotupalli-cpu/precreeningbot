@@ -74,12 +74,19 @@ async def entrypoint(ctx: JobContext):
 
     session = AgentSession(
         stt=google.STT(
-            languages=s.interview_languages,
-            model="chirp",
+            # chirp_2 is regional and supports ONE language per stream; multi-language
+            # is only offered in us/eu/global where chirp_2 is absent. Indian-English
+            # candidates → primary language (en-IN) + chirp_2 in a region that hosts it.
+            languages=s.interview_languages[0],
+            model="chirp_2",
+            location="us-central1",
             spoken_punctuation=False,
         ),
         llm=google.LLM(model=s.gemini_model, temperature=0.6),  # PLAIN TEXT — no JSON mode
-        tts=google.TTS(voice_name=s.tts_voice),                 # Chirp3-HD, use_streaming=True default
+        tts=google.TTS(                                         # Chirp3-HD, use_streaming=True default
+            voice_name=s.tts_voice,
+            language="-".join(s.tts_voice.split("-")[:2]),      # match voice locale (e.g. en-IN) — must not default to en-US
+        ),
         turn_detection=turn_detector,
     )
 

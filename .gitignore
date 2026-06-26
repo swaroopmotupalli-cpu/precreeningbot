@@ -6,3 +6,11 @@ __pycache__/
 venv/
 agent/.venv/
 .superpowers/
+# GCP service-account credentials — never commit
+ai-interview-*.json
+*-service-account*.json
+gcp-*.json
+# build artifacts
+*.egg-info/
+# local test audio fixtures (supply your own per tools/fixtures/README.md)
+tools/fixtures/*.wav
