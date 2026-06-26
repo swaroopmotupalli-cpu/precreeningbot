@@ -48,3 +48,29 @@ async def test_throwing_mongo_still_runs_finally(redis):
     flag = []
     await _run(redis, say, mongo, flag)
     assert flag == [True]
+
+
+async def test_mongo_write_retries_transient():
+    calls = {"n": 0}
+    async def mongo_write(doc):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise ConnectionError("temporarily unavailable")
+        return {"ok": 1}
+
+    class _T:
+        async def assemble(self):
+            return [{"seq": 0, "speaker": "tara", "text": "hi"}]
+
+    finally_called = {"v": False}
+    await end_interview(
+        say_fn=lambda: asyncio.sleep(0),
+        transcript_store=_T(),
+        mongo_write_fn=mongo_write,
+        room="r", contest_id="c", candidate_id="u",
+        say_timeout=1.0, write_timeout=1.0,
+        on_finally=lambda: finally_called.__setitem__("v", True),
+        offpath_retry_attempts=4, retry_base_delay_ms=1, retry_max_delay_ms=2,
+    )
+    assert calls["n"] == 2       # retried the transient write once
+    assert finally_called["v"]   # finally still runs exactly once

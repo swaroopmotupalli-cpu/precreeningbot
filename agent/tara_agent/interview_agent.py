@@ -89,4 +89,7 @@ class InterviewAgent(Agent):
             say_timeout=self._settings.say_timeout_seconds,
             write_timeout=self._settings.mongo_write_timeout_seconds,
             on_finally=self._on_end_and_release,
+            offpath_retry_attempts=self._settings.offpath_retry_attempts,
+            retry_base_delay_ms=self._settings.retry_base_delay_ms,
+            retry_max_delay_ms=self._settings.retry_max_delay_ms,
         )
