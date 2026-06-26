@@ -26,6 +26,8 @@ class InterviewAgent(Agent):
         mongo_write_fn,
         settings,
         on_end,
+        limiter=None,
+        room: str = "",
     ):
         super().__init__(instructions=instructions)
         self._blob = blob
@@ -34,6 +36,8 @@ class InterviewAgent(Agent):
         self._mongo_write_fn = mongo_write_fn
         self._settings = settings
         self._on_end = on_end
+        self._limiter = limiter
+        self._room = room
         self._q_count = 0
         self._ending = False  # guard: ensure _wrap_up runs at most once
 
@@ -59,8 +63,19 @@ class InterviewAgent(Agent):
         """Append a Tara (assistant) line to the transcript store."""
         await self._transcript.append("tara", text)
 
+    def _on_end_and_release(self):
+        """Called in the guaranteed finally of end_interview.
+
+        Schedules limiter.release (fire-and-scheduled — does not block the
+        finally path) then signals done via self._on_end().
+        The heartbeat TTL backstops release if the task is cut off.
+        """
+        if self._limiter is not None and self._room:
+            asyncio.create_task(self._limiter.release(self._room))
+        self._on_end()
+
     async def _wrap_up(self):
-        """Say goodbye, persist transcript, then signal done."""
+        """Say goodbye, persist transcript, then signal done and release lease."""
         room_name = self._transcript._key.split(":", 1)[1]
         await end_interview(
             say_fn=lambda: self.session.say(
@@ -73,5 +88,5 @@ class InterviewAgent(Agent):
             candidate_id=self._blob.candidate_id,
             say_timeout=self._settings.say_timeout_seconds,
             write_timeout=self._settings.mongo_write_timeout_seconds,
-            on_finally=self._on_end,
+            on_finally=self._on_end_and_release,
         )
