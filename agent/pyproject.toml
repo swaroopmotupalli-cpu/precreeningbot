@@ -1,0 +1,19 @@
+[project]
+name = "tara-agent"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "livekit-agents~=1.0",
+  "livekit-plugins-google~=1.0",
+  "livekit-plugins-turn-detector~=1.0",
+  "redis~=5.0",
+  "motor~=3.4",
+  "pydantic-settings~=2.2",
+  "google-genai~=1.0",
+]
+[project.optional-dependencies]
+dev = ["pytest~=8.0", "pytest-asyncio~=0.23", "fakeredis~=2.21", "mongomock-motor~=0.0.29"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
