@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tara-agent
+  labels:
+    app: tara-agent
+    app.kubernetes.io/part-of: tara
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tara-agent
+  template:
+    metadata:
+      labels:
+        app: tara-agent
+        app.kubernetes.io/part-of: tara
+    spec:
+      containers:
+        - name: tara-agent
+          # Placeholder — replace with the built+pushed image (see README).
+          image: IMAGE_REGISTRY/tara-agent:TAG
+          imagePullPolicy: IfNotPresent
+          workingDir: /app/agent
+          command: ["python", "-m", "tara_agent.worker", "start"]
+          ports:
+            - name: metrics
+              containerPort: 9091
+          envFrom:
+            - configMapRef:
+                name: tara-config
+          env:
+            # --- Secrets: referenced only via secretKeyRef (no inline values) ---
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tara-secrets
+                  key: GEMINI_API_KEY
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: tara-secrets
+                  key: REDIS_URL
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: tara-secrets
+                  key: MONGODB_URI
+            - name: LIVEKIT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: tara-secrets
+                  key: LIVEKIT_URL
+            - name: LIVEKIT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tara-secrets
+                  key: LIVEKIT_API_KEY
+            - name: LIVEKIT_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: tara-secrets
+                  key: LIVEKIT_API_SECRET
+            # GOOGLE_APPLICATION_CREDENTIALS is a FILE PATH pointing at the
+            # GCP SA JSON mounted from the tara-gcp-sa Secret volume below.
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /var/secrets/gcp/sa.json
+          volumeMounts:
+            - name: gcp-sa
+              mountPath: /var/secrets/gcp
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            # Load-test-calibrated starting points (Task 7).
+            requests:
+              cpu: "250m"
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: gcp-sa
+          secret:
+            secretName: tara-gcp-sa

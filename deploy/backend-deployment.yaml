@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tara-backend
+  labels:
+    app: tara-backend
+    app.kubernetes.io/part-of: tara
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tara-backend
+  template:
+    metadata:
+      labels:
+        app: tara-backend
+        app.kubernetes.io/part-of: tara
+    spec:
+      containers:
+        - name: tara-backend
+          # Placeholder — replace with the built+pushed image (see README).
+          image: IMAGE_REGISTRY/tara-backend:TAG
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            # PORT comes from the ConfigMap.
+            - name: PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: tara-config
+                  key: PORT
+            # --- Secrets: referenced only via secretKeyRef (no inline values) ---
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: tara-secrets
+                  key: REDIS_URL
+            - name: LIVEKIT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: tara-secrets
+                  key: LIVEKIT_URL
+            - name: LIVEKIT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tara-secrets
+                  key: LIVEKIT_API_KEY
+            - name: LIVEKIT_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: tara-secrets
+                  key: LIVEKIT_API_SECRET
+          readinessProbe:
+            # No /healthz route exists yet (server.js only serves POST /sessions).
+            # Use a TCP probe for now; add httpGet /healthz later (see README).
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            # Load-test-calibrated starting points (Task 7).
+            requests:
+              cpu: "100m"
+              memory: 128Mi
+            limits:
+              cpu: "500m"
+              memory: 256Mi
