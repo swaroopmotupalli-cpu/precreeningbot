@@ -4,10 +4,12 @@ const { AccessToken } = require("livekit-server-sdk");
 const { createSession } = require("./createSession");
 const { Limiter } = require("./limiter");
 const { loadLimiterConfig } = require("./limiterConfig");
+const { makeHealthz } = require("./health");
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 const redis = new Redis(process.env.REDIS_URL);
+app.get("/healthz", makeHealthz(redis));
 
 const cfg = loadLimiterConfig(process.env);
 const limiter = new Limiter(redis, {
