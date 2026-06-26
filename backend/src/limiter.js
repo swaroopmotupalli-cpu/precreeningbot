@@ -6,11 +6,11 @@ const LUA_DIR = path.resolve(__dirname, "..", "..", "shared", "limiter");
 const ADMIT = fs.readFileSync(path.join(LUA_DIR, "admit.lua"), "utf8");
 const PREFIX = "{tara-limiter}";
 
-function keys() {
-  return [`${PREFIX}:count:global`, `${PREFIX}:count:gemini_tpm`,
-    `${PREFIX}:count:stt_streams`, `${PREFIX}:count:tts_streams`,
-    `${PREFIX}:reservations`, `${PREFIX}:metric:reclaim:no_show`,
-    `${PREFIX}:metric:reclaim:crash`, `${PREFIX}:metric:reclaim:false`];
+function keys(prefix = PREFIX) {
+  return [`${prefix}:count:global`, `${prefix}:count:gemini_tpm`,
+    `${prefix}:count:stt_streams`, `${prefix}:count:tts_streams`,
+    `${prefix}:reservations`, `${prefix}:metric:reclaim:no_show`,
+    `${prefix}:metric:reclaim:crash`, `${prefix}:metric:reclaim:false`];
 }
 
 class Limiter {
@@ -18,7 +18,7 @@ class Limiter {
     this.redis = redis; this.caps = caps; this.ttl = reservationTtlMs; this.prefix = prefix;
   }
   async tryAdmit(room, nowMs) {
-    const k = keys();
+    const k = keys(this.prefix);
     const res = await this.redis.eval(ADMIT, k.length, ...k,
       room, nowMs, this.ttl, this.caps.global, this.caps.geminiTpm,
       this.caps.sttStreams, this.caps.ttsStreams, this.prefix);

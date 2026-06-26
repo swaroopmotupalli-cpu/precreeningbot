@@ -31,3 +31,11 @@ test("reconnect refreshes without double-count", async () => {
   expect(again.state).toBe("refreshed");
   expect(Number(await redis.get("{tara-limiter}:count:global"))).toBe(1);
 });
+
+test("custom prefix is honored in keys and ARGV", async () => {
+  const customPrefix = "{tara-test}";
+  const lim = new Limiter(redis, { prefix: customPrefix, caps, reservationTtlMs: 45000 });
+  await lim.tryAdmit("r1", 1000);
+  expect(Number(await redis.get(`${customPrefix}:count:global`))).toBe(1);
+  expect(await redis.get("{tara-limiter}:count:global")).toBe(null);
+});
