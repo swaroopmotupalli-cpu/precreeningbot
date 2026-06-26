@@ -18,6 +18,11 @@ class AdmitResult:
     bucket: str | None
     counts: dict
 
+@dataclass(frozen=True)
+class Reclaim:
+    room: str
+    reason: str
+
 class Limiter:
     def __init__(self, redis, *, prefix="{tara-limiter}", caps: Caps,
                  reservation_ttl_ms: int, heartbeat_ttl_ms: int):
@@ -29,7 +34,7 @@ class Limiter:
         self._admit = redis.register_script((_LUA_DIR / "admit.lua").read_text())
         self._refresh = redis.register_script((_LUA_DIR / "refresh.lua").read_text())
         self._release = redis.register_script((_LUA_DIR / "release.lua").read_text())
-        # reap registered in later tasks
+        self._reap = redis.register_script((_LUA_DIR / "reap.lua").read_text())
 
     def _keys(self):
         p = self._p
@@ -65,3 +70,20 @@ class Limiter:
                   f"{self._p}:reservations"],
             args=[room, self._p])
         return int(res) == 1
+
+    async def reap(self, now_ms: int) -> list[Reclaim]:
+        flat = await self._reap(keys=self._keys(), args=[now_ms, self._p])
+        return [Reclaim(flat[i], flat[i + 1]) for i in range(0, len(flat), 2)]
+
+    async def metrics(self) -> dict:
+        async def g(k):
+            return int(await self._r.get(f"{self._p}:{k}") or 0)
+        return {
+            "reclaim_no_show": await g("metric:reclaim:no_show"),
+            "reclaim_crash": await g("metric:reclaim:crash"),
+            "reclaim_false": await g("metric:reclaim:false"),
+            "reject_global": await g("metric:reject:global"),
+            "reject_gemini_tpm": await g("metric:reject:gemini_tpm"),
+            "reject_stt_streams": await g("metric:reject:stt_streams"),
+            "reject_tts_streams": await g("metric:reject:tts_streams"),
+        }
