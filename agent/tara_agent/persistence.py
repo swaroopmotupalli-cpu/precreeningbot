@@ -17,6 +17,10 @@ async def end_interview(*, say_fn, transcript_store, mongo_write_fn, room,
             log.warning("closing say failed/hung: %s", e)
 
         lines = await transcript_store.assemble()
+        from tara_agent.audit import audit_transcript
+        problems = audit_transcript(lines)
+        if problems:
+            log.warning("transcript audit problems for room %s: %s", room, problems)
         doc = {"room": room, "contestId": contest_id,
                "candidateId": candidate_id, "transcript": lines}
         try:
