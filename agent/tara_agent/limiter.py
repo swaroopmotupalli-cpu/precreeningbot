@@ -27,7 +27,8 @@ class Limiter:
         self._res_ttl = reservation_ttl_ms
         self._hb_ttl = heartbeat_ttl_ms
         self._admit = redis.register_script((_LUA_DIR / "admit.lua").read_text())
-        # refresh/release/reap registered in later tasks
+        self._refresh = redis.register_script((_LUA_DIR / "refresh.lua").read_text())
+        # release/reap registered in later tasks
 
     def _keys(self):
         p = self._p
@@ -46,3 +47,12 @@ class Limiter:
                 "global": int(g), "gemini_tpm": int(gm),
                 "stt_streams": int(st), "tts_streams": int(tt)})
         return AdmitResult(False, None, res[1], {})
+
+    async def heartbeat(self, room: str, now_ms: int, *,
+                        mark_heartbeat: bool = False,
+                        mark_participant: bool = False) -> bool:
+        res = await self._refresh(
+            keys=[f"{self._p}:reservations"],
+            args=[room, now_ms, self._hb_ttl,
+                  1 if mark_heartbeat else 0, 1 if mark_participant else 0, self._p])
+        return int(res) == 1
