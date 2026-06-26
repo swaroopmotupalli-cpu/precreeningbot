@@ -1,8 +1,9 @@
 # Tara — Kubernetes deploy manifests
 
 Base manifests for running Tara on GKE: the Python LiveKit agent worker, the
-Node backend, their Services, and non-secret config. This is the Phase-3
-"Task 5" baseline — scaling, drain, and scrape wiring come in Task 6.
+Node backend, their Services, and non-secret config — plus the Phase-3 scaling,
+drain-safety, and metrics-scrape wiring (KEDA ScaledObject, PodDisruptionBudget,
+preStop drain hook, and Prometheus ServiceMonitor).
 
 ## Manifests
 
@@ -12,6 +13,9 @@ Node backend, their Services, and non-secret config. This is the Phase-3
 | `agent-deployment.yaml` | `tara-agent` Deployment — the Python LiveKit worker (`python -m tara_agent.worker start`). Exposes Prometheus metrics on port 9091 (`metrics`). |
 | `backend-deployment.yaml` | `tara-backend` Deployment — the Node backend (`POST /sessions`) on port 3000. |
 | `services.yaml` | `tara-backend` ClusterIP Service (port 3000) + `tara-agent-metrics` headless Service (port 9091) for per-pod metric scraping. |
+| `keda-scaledobject.yaml` | KEDA `ScaledObject` targeting the `tara-agent` Deployment by name. Scales on `sum(active_sessions)` (NEVER CPU) via the Prometheus scaler, `threshold: 12` (= `SESSIONS_PER_POD_TARGET`). Warm floor `minReplicaCount: 2`, guardrail `maxReplicaCount: 20`, `pollingInterval: 10`, `cooldownPeriod: 300`, fast scale-up / slow scale-down behavior (`T_react < T_drain`). |
+| `pdb.yaml` | `PodDisruptionBudget` (`minAvailable: 1`, selects `app: tara-agent`) — voluntary disruptions can't drop live-session pods below the floor. |
+| `prometheus-scrape.yaml` | Prometheus-Operator `ServiceMonitor` selecting `tara-agent-metrics`, scraping port `metrics` path `/` every `5s` (= `METRIC_SCRAPE_INTERVAL`). Includes a commented raw `prometheus.yml` `scrape_config` for operator-less clusters. |
 
 ## Apply order
 
@@ -22,10 +26,25 @@ kubectl apply -f deploy/configmap.yaml
 kubectl apply -f deploy/agent-deployment.yaml
 kubectl apply -f deploy/backend-deployment.yaml
 kubectl apply -f deploy/services.yaml
+# Scaling / drain / scrape (require operators — see prerequisites below):
+kubectl apply -f deploy/keda-scaledobject.yaml
+kubectl apply -f deploy/pdb.yaml
+kubectl apply -f deploy/prometheus-scrape.yaml
 ```
 
 (Order is not strictly enforced by Kubernetes, but applying the ConfigMap
-first avoids pods crash-looping on missing config.)
+first avoids pods crash-looping on missing config. Apply the `Service`
+before the `ServiceMonitor` so the scrape target exists.)
+
+### Cluster prerequisites for the Phase-3 manifests
+
+- **KEDA operator** (`keda.sh`) installed — required for `keda-scaledobject.yaml`
+  (the `ScaledObject` CRD). KEDA manages an HPA for the `tara-agent` Deployment.
+- **Prometheus Operator** (`monitoring.coreos.com`) installed, with a Prometheus
+  whose `serviceMonitorSelector` matches the ServiceMonitor's `release:` label —
+  required for `prometheus-scrape.yaml`. That Prometheus must be reachable at the
+  `serverAddress` in the ScaledObject's Prometheus trigger.
+- **`PodDisruptionBudget`** (`policy/v1`) is a built-in — no operator needed.
 
 ## Secrets — create out-of-band (NEVER committed)
 
@@ -72,17 +91,19 @@ must contain the `agent/` tree (the container runs with `workingDir: /app/agent`
 `SESSIONS_PER_POD_TARGET` ("12") and `WARM_POOL_PERCENT` ("20") are **operator /
 KEDA inputs**, not read by `agent/tara_agent/config.py` today. They are
 co-located in `tara-config` deliberately so all tuning lives in one place; the
-Task 6 KEDA ScaledObject / warm-pool logic consumes them.
+KEDA ScaledObject (`keda-scaledobject.yaml`) consumes `SESSIONS_PER_POD_TARGET`
+as its Prometheus-trigger `threshold`, and `WARM_POOL_PERCENT` documents the
+`minReplicaCount` warm-floor formula
+(`floor = ceil(baseline_pods × (1 + WARM_POOL_PERCENT/100))`).
 
-## What comes later (Task 6 / Task 7)
+## What comes later (Task 7)
 
-- **Task 6** adds, by modifying `agent-deployment.yaml` and new manifests:
-  `terminationGracePeriodSeconds` + a `preStop` drain hook on the agent,
-  a KEDA `ScaledObject` targeting the `tara-agent` Deployment by name, a
-  `PodDisruptionBudget`, and a Prometheus `ServiceMonitor` selecting the
-  `tara-agent-metrics` Service. None of those are present here yet.
-- **Task 7** calibrates resource requests/limits and replica counts from
-  load-test data. The CPU/memory values here are starting points only.
+- **Task 7** calibrates from load-test data: resource requests/limits, replica
+  counts, the warm-floor `minReplicaCount`, `terminationGracePeriodSeconds`, and
+  the KEDA `threshold`. The values present today are reasoned starting points,
+  not load-proven numbers. kubeconform proves SCHEMA only — the runtime
+  invariants (`T_react < T_drain`, scale-up leads demand, warm pool never floors,
+  scale-down drains rather than evicts) are GKE-runtime properties verified there.
 - A backend `/healthz` route does not exist yet — the backend readinessProbe is
   a TCP check on port 3000 for now; switch to `httpGet: /healthz` once added.
 

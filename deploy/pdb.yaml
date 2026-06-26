@@ -1,0 +1,31 @@
+# PodDisruptionBudget for the tara-agent worker.
+#
+# Scale-down DRAINS, never EVICTS. Voluntary disruptions (node drains, cluster
+# upgrades, autoscaler consolidation) must not take live-session pods below the
+# floor. This PDB caps how many agent pods can be voluntarily disrupted at once.
+#
+# This is a RELIABILITY guarantee, paired with:
+#   - the preStop drain hook + terminationGracePeriodSeconds: 120 on the
+#     agent container (deploy/agent-deployment.yaml), which let the LiveKit
+#     worker finish in-flight interviews on SIGTERM, and
+#   - the KEDA scaleDown stabilization window (calm scale-down).
+#
+# minAvailable: 1 keeps at least one warm, session-capable pod up through any
+# single voluntary disruption. Expressed as an absolute count (not a %) so the
+# guarantee holds even when KEDA has scaled the Deployment down toward the warm
+# floor (minReplicaCount: 2). Calibrated alongside the warm pool by Task 7.
+#
+# PREREQUISITE: policy/v1 PodDisruptionBudget is a built-in (k8s >= 1.21); no
+# CRD/operator needed.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: tara-agent
+  labels:
+    app: tara-agent
+    app.kubernetes.io/part-of: tara
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: tara-agent

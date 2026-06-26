@@ -1,0 +1,68 @@
+# Prometheus scrape config for the tara-agent worker metrics.
+#
+# The agent exports `active_sessions` (and turn-latency / limiter signals) on
+# port 9091 via prometheus_client, served at path `/` (the client default — NOT
+# `/metrics`). KEDA scales on sum(active_sessions), so this scrape is IN the
+# scaling control loop: scrape staleness => scale-up lag => 45s-lease misses.
+#
+# interval: 5s == METRIC_SCRAPE_INTERVAL (configmap). This is a RELIABILITY
+# parameter, not a monitoring-taste knob: it bounds how stale the scale signal
+# can be. KEDA polls every 10s on top of this, so 5s scrape keeps each poll
+# reading fresh data.
+#
+# PREFERRED: Prometheus-Operator ServiceMonitor selecting the headless
+# tara-agent-metrics Service (deploy/services.yaml, labels app: tara-agent,
+# port name `metrics` = 9091). Requires the Prometheus Operator
+# (monitoring.coreos.com) installed AND a Prometheus whose serviceMonitorSelector
+# matches the label below (here: release: prometheus — adjust to your stack).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: tara-agent
+  labels:
+    app: tara-agent
+    app.kubernetes.io/part-of: tara
+    # Label the operator's Prometheus serviceMonitorSelector keys on. Adjust
+    # `release: prometheus` to match your kube-prometheus-stack install.
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: tara-agent
+  endpoints:
+    # port references the Service port NAME (`metrics` = 9091), path is `/`
+    # (prometheus_client default). interval = METRIC_SCRAPE_INTERVAL (5s).
+    - port: metrics
+      path: /
+      interval: 5s
+      scrapeTimeout: 3s
+---
+# ALTERNATIVE for clusters WITHOUT the Prometheus Operator: drop this
+# scrape_config into your raw prometheus.yml. It uses kubernetes_sd to find
+# agent pods by label and scrapes the named `metrics` port at path `/` every
+# 5s. (Commented so this document still validates as a single ServiceMonitor;
+# uncomment into prometheus.yml, do not apply as a k8s object.)
+#
+# apiVersion: v1
+# kind: ConfigMap
+# metadata:
+#   name: tara-agent-prometheus-scrape-snippet
+#   labels:
+#     app: tara-agent
+#     app.kubernetes.io/part-of: tara
+# data:
+#   prometheus-scrape.yml: |
+#     scrape_configs:
+#       - job_name: tara-agent
+#         scrape_interval: 5s        # = METRIC_SCRAPE_INTERVAL (reliability)
+#         scrape_timeout: 3s
+#         metrics_path: /            # prometheus_client default, NOT /metrics
+#         kubernetes_sd_configs:
+#           - role: pod
+#         relabel_configs:
+#           - source_labels: [__meta_kubernetes_pod_label_app]
+#             action: keep
+#             regex: tara-agent
+#           - source_labels: [__meta_kubernetes_pod_container_port_name]
+#             action: keep
+#             regex: metrics
