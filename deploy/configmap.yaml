@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tara-config
+  labels:
+    app.kubernetes.io/part-of: tara
+data:
+  # --- Agent worker: admission caps / budgets (Phase 2) ---
+  MAX_GLOBAL_SESSIONS: "110"
+  GEMINI_TPM_BUDGET: "60"
+  STT_STREAM_BUDGET: "100"
+  TTS_STREAM_BUDGET: "100"
+  # --- Two-tier lease (seconds) ---
+  RESERVATION_LEASE_TTL: "45"
+  HEARTBEAT_INTERVAL: "15"
+  HEARTBEAT_LEASE_TTL: "60"
+  # --- Prometheus /metrics exporter (Phase 3) ---
+  METRICS_PORT: "9091"
+  METRIC_SCRAPE_INTERVAL: "5"
+  # --- Model / interview config ---
+  GEMINI_MODEL: "gemini-3.1-flash-lite"
+  TTS_VOICE: "en-IN-Chirp3-HD-Erinome"
+  MAX_QUESTIONS: "12"
+  # --- Phase-3 scaling knobs: operator/KEDA inputs (Task 6).
+  # NOT consumed by agent/tara_agent/config.py today — co-located here as
+  # single-source config for the KEDA ScaledObject / warm-pool logic. ---
+  SESSIONS_PER_POD_TARGET: "12"
+  WARM_POOL_PERCENT: "20"
+  # --- Backend ---
+  PORT: "3000"

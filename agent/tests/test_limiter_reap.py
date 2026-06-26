@@ -34,3 +34,12 @@ async def test_reap_leaves_live_reservations(real_redis):
     out = await lim.reap(now_ms=2000)                  # still live
     assert out == []
     assert int(await real_redis.get("{tara-limiter}:count:global")) == 1
+
+async def test_metrics_includes_live_count(real_redis):
+    lim = make(real_redis)
+    await lim.try_admit("r1", now_ms=1000)
+    m = await lim.metrics()
+    assert m["count_global"] == 1
+    assert m["count_gemini_tpm"] == 1
+    assert m["count_stt_streams"] == 1
+    assert m["count_tts_streams"] == 1

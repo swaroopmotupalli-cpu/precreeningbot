@@ -1,0 +1,96 @@
+# KEDA ScaledObject for the tara-agent worker.
+#
+# SCALE SIGNAL = active-session count per pod, NEVER CPU. Voice interviews are
+# I/O- and lease-bound, not CPU-bound; CPU is a misleading proxy that would
+# under-provision under many idle-but-held sessions and over-provision under
+# bursty audio. We scale on the `active_sessions` gauge the worker exports on
+# port 9091 (Task 1/2), summed across pods, via the Prometheus scaler.
+#
+# KEDA divides the summed metric by `threshold` to pick the replica count, so
+# avg sessions/pod converges to ~SESSIONS_PER_POD_TARGET (12).
+#
+# Every value below is a RELIABILITY parameter (lease/drain correctness), not a
+# monitoring-taste knob. See inline notes.
+#
+# PREREQUISITES (cluster-side, NOT installed by this manifest):
+#   - KEDA operator (keda.sh) installed in the cluster.
+#   - A Prometheus reachable at serverAddress below, scraping the agent
+#     metrics every 5s (see deploy/prometheus-scrape.yaml).
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: tara-agent
+  labels:
+    app: tara-agent
+    app.kubernetes.io/part-of: tara
+spec:
+  scaleTargetRef:
+    # Target the tara-agent Deployment BY NAME (KEDA manages an HPA for it).
+    apiVersion: apps/v1
+    kind: Deployment
+    name: tara-agent
+  # Metric freshness is IN-PATH: a stale active_sessions read delays scale-up
+  # and risks cold-start dispatch > 30s, which fires false no-shows. 10s poll
+  # (= KEDA_POLL_INTERVAL) keeps the signal fresh. The underlying Prometheus
+  # scrape interval is 5s (= METRIC_SCRAPE_INTERVAL); poll > scrape on purpose.
+  pollingInterval: 10
+  # cooldownPeriod LARGER than pollingInterval => calm scale-down. After the
+  # last active session drains, wait before scaling the Deployment toward
+  # minReplicaCount. Must be comfortably > pollingInterval.
+  cooldownPeriod: 300
+  # Warm headroom ~20% is a CORRECTNESS dependency for the 45s Tier-1 lease:
+  # if a dispatch hits a cold pod and cold-start > 30s, the lease expires and a
+  # present candidate is wrongly marked no-show. minReplicaCount is the WARM
+  # FLOOR, computed as:
+  #     floor = ceil(baseline_pods * (1 + WARM_POOL_PERCENT/100))
+  # With a baseline of ~1-2 pods and WARM_POOL_PERCENT=20 this rounds to 2.
+  # Calibrated by Task 7 against real load-test arrival curves.
+  minReplicaCount: 2
+  # Guardrail ceiling — caps blast radius / spend if active_sessions misbehaves
+  # or a metric outage pins the scaler high. Not a capacity promise.
+  maxReplicaCount: 20
+  advanced:
+    horizontalPodAutoscalerConfig:
+      # KEDA passes this `behavior` straight to the managed HPA. We want FAST
+      # scale-up (react before the lease window closes) and SLOW scale-down
+      # (drain calm, never thrash live-session pods).
+      #
+      # INVARIANT: T_react < T_drain. The scale-up stabilization window (react)
+      # MUST be smaller than the scale-down stabilization window (drain) — and
+      # both relate to the pod's terminationGracePeriodSeconds (120) + preStop
+      # drain. If we reacted slowly and drained fast we would evict live
+      # interviews; this ordering forbids that.
+      behavior:
+        scaleUp:
+          # React fast: no stabilization smoothing on the way up.
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 15
+            - type: Pods
+              value: 4
+              periodSeconds: 15
+          selectPolicy: Max
+        scaleDown:
+          # Drain calm: long stabilization window so transient dips in
+          # active_sessions don't yank pods out from under finishing
+          # interviews. 300s >> the 0s scale-up window (T_react < T_drain).
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 120
+          selectPolicy: Min
+  triggers:
+    - type: prometheus
+      metadata:
+        # Adjust serverAddress to your in-cluster Prometheus.
+        serverAddress: http://prometheus.monitoring.svc.cluster.local:9090
+        # Metric name is EXACTLY `active_sessions` (worker-exported gauge).
+        # sum() across all agent pods; KEDA divides by threshold for replicas.
+        query: sum(active_sessions)
+        # threshold = SESSIONS_PER_POD_TARGET. KEDA targets avg sessions/pod
+        # ~= 12. RELIABILITY parameter: too high overloads pods (lease misses),
+        # too low wastes warm capacity.
+        threshold: "12"

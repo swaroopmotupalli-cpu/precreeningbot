@@ -1,0 +1,119 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tara-agent
+  labels:
+    app: tara-agent
+    app.kubernetes.io/part-of: tara
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tara-agent
+  template:
+    metadata:
+      labels:
+        app: tara-agent
+        app.kubernetes.io/part-of: tara
+    spec:
+      containers:
+        - name: tara-agent
+          # Placeholder — replace with the built+pushed image (see README).
+          image: IMAGE_REGISTRY/tara-agent:TAG
+          imagePullPolicy: IfNotPresent
+          workingDir: /app/agent
+          command: ["python", "-m", "tara_agent.worker", "start"]
+          ports:
+            - name: metrics
+              containerPort: 9091
+          envFrom:
+            - configMapRef:
+                name: tara-config
+          env:
+            # --- Secrets: referenced only via secretKeyRef (no inline values) ---
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tara-secrets
+                  key: GEMINI_API_KEY
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: tara-secrets
+                  key: REDIS_URL
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: tara-secrets
+                  key: MONGODB_URI
+            - name: LIVEKIT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: tara-secrets
+                  key: LIVEKIT_URL
+            - name: LIVEKIT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tara-secrets
+                  key: LIVEKIT_API_KEY
+            - name: LIVEKIT_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: tara-secrets
+                  key: LIVEKIT_API_SECRET
+            # GOOGLE_APPLICATION_CREDENTIALS is a FILE PATH pointing at the
+            # GCP SA JSON mounted from the tara-gcp-sa Secret volume below.
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /var/secrets/gcp/sa.json
+          volumeMounts:
+            - name: gcp-sa
+              mountPath: /var/secrets/gcp
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            # Load-test-calibrated starting points (Task 7).
+            requests:
+              cpu: "250m"
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # --- Drain safety (RELIABILITY, not nicety) -----------------------
+          # On scale-down / rollout, k8s sends SIGTERM to the container. The
+          # LiveKit Agents worker drains in-flight jobs on SIGTERM (stops
+          # accepting new dispatch, lets live interviews finish). This preStop
+          # hook simply HOLDS the pod in Terminating long enough for that
+          # SIGTERM-driven drain to complete before the grace period kills it.
+          # There is no documented HTTP drain endpoint on the worker today, so
+          # a sleep is the cleanest expressible drain; a dedicated drain
+          # endpoint is a Phase-4 hardening follow-up.
+          # INVARIANT: terminationGracePeriodSeconds (120) MUST exceed this
+          # sleep (110) so the kubelet does not SIGKILL mid-drain.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 110"]
+      # Grace period must comfortably exceed the max expected in-flight
+      # interview drain (a turn + tail) and the preStop sleep above. The 45s
+      # Tier-1 lease + interview length drives this floor; 120 calibrated by
+      # Task 7. This is a RELIABILITY parameter: too short evicts live sessions.
+      terminationGracePeriodSeconds: 120
+      volumes:
+        - name: gcp-sa
+          secret:
+            secretName: tara-gcp-sa

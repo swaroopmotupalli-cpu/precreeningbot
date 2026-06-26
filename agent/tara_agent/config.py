@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     reservation_lease_ttl: int = 45
     heartbeat_interval: int = 15
     heartbeat_lease_ttl: int = 60
+    # Prometheus /metrics exporter (Phase 3)
+    metrics_port: int = 9091
+    metric_scrape_interval: int = 5
 
 @lru_cache
 def get_settings() -> Settings:
