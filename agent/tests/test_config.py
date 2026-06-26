@@ -55,3 +55,14 @@ def test_admission_settings_override(monkeypatch):
     s = Settings()
     assert s.max_global_sessions == 200
     assert s.gemini_tpm_budget == 42
+
+def test_phase4_retry_defaults(monkeypatch):
+    for k, v in {
+        "GEMINI_API_KEY": "g", "GOOGLE_APPLICATION_CREDENTIALS": "/c.json",
+        "REDIS_URL": "redis://x", "MONGODB_URI": "mongodb://x",
+        "LIVEKIT_URL": "wss://x", "LIVEKIT_API_KEY": "k", "LIVEKIT_API_SECRET": "s",
+    }.items():
+        monkeypatch.setenv(k, v)
+    s = Settings()
+    assert s.hot_retry_attempts == 2
+    assert s.offpath_retry_attempts == 4

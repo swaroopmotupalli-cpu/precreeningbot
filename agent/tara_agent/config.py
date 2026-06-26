@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     # Prometheus /metrics exporter (Phase 3)
     metrics_port: int = 9091
     metric_scrape_interval: int = 5
+    # Phase 4 — bounded retry (calls we control)
+    hot_retry_attempts: int = 2        # greeting/hot path: 1 retry max
+    offpath_retry_attempts: int = 4    # coverage tagger + mongo write
+    retry_base_delay_ms: int = 50
+    retry_max_delay_ms: int = 400
 
 @lru_cache
 def get_settings() -> Settings:
