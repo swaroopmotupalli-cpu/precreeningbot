@@ -40,8 +40,9 @@ class TaraMetrics:
             self._bump(self.bucket_rejections.labels(bucket=b), f"rej_{b}",
                        metrics.get(f"reject_{b}", 0))
             cap = (caps or {}).get(b, 0)
-            if cap:
-                self.bucket_utilization.labels(bucket=b).set(min(1.0, self._last.get(f"cnt_{b}", 0) / cap))
+            if cap > 0:
+                count = metrics.get(f"count_{b}", 0)
+                self.bucket_utilization.labels(bucket=b).set(min(1.0, count / cap))
 
     def render(self) -> bytes:
         return generate_latest(self.registry)

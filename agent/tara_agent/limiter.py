@@ -86,4 +86,9 @@ class Limiter:
             "reject_gemini_tpm": await g("metric:reject:gemini_tpm"),
             "reject_stt_streams": await g("metric:reject:stt_streams"),
             "reject_tts_streams": await g("metric:reject:tts_streams"),
+            # Live bucket counts — used by metrics_export to compute bucket_utilization
+            "count_global": await g("count:global"),
+            "count_gemini_tpm": await g("count:gemini_tpm"),
+            "count_stt_streams": await g("count:stt_streams"),
+            "count_tts_streams": await g("count:tts_streams"),
         }

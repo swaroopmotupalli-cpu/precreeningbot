@@ -252,12 +252,14 @@ async def entrypoint(ctx: JobContext):
     # Flush the latency breakdown exactly once, however the session ends
     # (natural coverage/cap end, candidate disconnect, or job shutdown).
     _flushed = {"v": False}
+    _started = {"v": False}  # True only after session.start() succeeded + session_started() called
 
     def _flush_breakdown():
         if _flushed["v"]:
             return
         _flushed["v"] = True
-        _METRICS.session_ended()
+        if _started["v"]:   # guard: don't decrement if session.start() never succeeded
+            _METRICS.session_ended()
         try:
             payload = json.dumps(latency.breakdown_p50())
         except Exception as e:  # empty collector (no turns) — report, don't crash
@@ -280,6 +282,7 @@ async def entrypoint(ctx: JobContext):
     # session.start automatically calls ctx.connect() when a room is passed.
     await session.start(agent=agent, room=ctx.room)
     _METRICS.session_started()
+    _started["v"] = True
 
     # Promote the reservation to a Tier-2 heartbeat lease now that the agent has
     # joined (sets both mark_heartbeat and mark_participant flags).
