@@ -140,6 +140,49 @@ async def entrypoint(ctx: JobContext):
         if getattr(item, "role", None) == "assistant":
             asyncio.create_task(agent.on_tara_line(item.text_content or ""))
 
+    # Signal "Tara finished her turn" to any participant (the latency harness
+    # waits on this so it never publishes the next answer over Tara's speech).
+    # Only fire on speaking → listening so the greeting counts but the initial
+    # idle "listening" does not.
+    async def _signal_tara_done():
+        try:
+            await ctx.room.local_participant.publish_data(
+                "tara_done", topic="gate", reliable=True
+            )
+        except Exception as e:  # never let signalling break the session
+            log.debug("tara_done publish failed: %s", e)
+
+    @session.on("agent_state_changed")
+    def _on_agent_state(ev):
+        if ev.old_state == "speaking" and ev.new_state == "listening":
+            asyncio.create_task(_signal_tara_done())
+
+    # Flush the latency breakdown exactly once, however the session ends
+    # (natural coverage/cap end, candidate disconnect, or job shutdown).
+    _flushed = {"v": False}
+
+    def _flush_breakdown():
+        if _flushed["v"]:
+            return
+        _flushed["v"] = True
+        try:
+            payload = json.dumps(latency.breakdown_p50())
+        except Exception as e:  # empty collector (no turns) — report, don't crash
+            payload = json.dumps({"error": "no_turns_recorded", "detail": str(e)})
+        log.info("LATENCY_BREAKDOWN_P50=%s", payload)
+        print("LATENCY_BREAKDOWN_P50=" + payload, flush=True)
+
+    # session "close" fires on candidate disconnect — flush promptly and release
+    # the entrypoint so the breakdown is printed well inside the harness window.
+    @session.on("close")
+    def _on_close(*_a):
+        done.set()
+
+    async def _flush_on_shutdown():
+        _flush_breakdown()
+
+    ctx.add_shutdown_callback(_flush_on_shutdown)  # backstop if "close" path is missed
+
     # session.start automatically calls ctx.connect() when a room is passed.
     await session.start(agent=agent, room=ctx.room)
 
@@ -149,10 +192,7 @@ async def entrypoint(ctx: JobContext):
     )
 
     await done.wait()
-
-    breakdown = latency.breakdown_p50()
-    log.info("LATENCY_BREAKDOWN_P50=%s", json.dumps(breakdown))
-    print("LATENCY_BREAKDOWN_P50=" + json.dumps(breakdown))
+    _flush_breakdown()
 
 
 if __name__ == "__main__":

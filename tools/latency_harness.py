@@ -218,6 +218,20 @@ async def run_harness(subprocess_mode: bool = False) -> str | None:
     # 2. Join the LiveKit room as the synthetic candidate
     # ------------------------------------------------------------------
     room = rtc.Room()
+
+    # The worker publishes a "tara_done" data message (topic="gate") each time
+    # Tara finishes speaking. We gate each answer on it so the candidate never
+    # talks over Tara — otherwise the per-turn latency metric is polluted.
+    tara_done_q: "asyncio.Queue[bool]" = asyncio.Queue()
+
+    @room.on("data_received")
+    def _on_data(pkt: "rtc.DataPacket") -> None:
+        if getattr(pkt, "topic", "") == "gate":
+            try:
+                tara_done_q.put_nowait(True)
+            except asyncio.QueueFull:
+                pass
+
     await room.connect(livekit_url, token)
     print(f"Joined room: {room.name}  (local participant: {room.local_participant.identity})")
 
@@ -235,12 +249,16 @@ async def run_harness(subprocess_mode: bool = False) -> str | None:
     # ------------------------------------------------------------------
     # 3. Publish WAV utterances, one per question slot
     # ------------------------------------------------------------------
+    turn_wait = float(os.environ.get("TURN_WAIT_SECONDS", "40.0"))
     for i, path in enumerate(FIXTURES, start=1):
-        print(f"\nTurn {i}: waiting {TURN_PAUSE_SECONDS:.1f}s for Tara's question …")
-        await asyncio.sleep(TURN_PAUSE_SECONDS)
-        print(f"Turn {i}: publishing {os.path.basename(path)}")
+        print(f"\nTurn {i}: waiting for Tara to finish speaking (≤{turn_wait:.0f}s) …")
+        try:
+            await asyncio.wait_for(tara_done_q.get(), timeout=turn_wait)
+            print(f"Turn {i}: Tara finished — publishing {os.path.basename(path)}")
+        except asyncio.TimeoutError:
+            print(f"Turn {i}: WARNING no tara_done within {turn_wait:.0f}s — publishing anyway")
         await _publish_wav(source, path)
-        print(f"Turn {i}: done.")
+        print(f"Turn {i}: answer published.")
 
     # ------------------------------------------------------------------
     # 4. Drain: give the worker time to finish the last turn and print breakdown
