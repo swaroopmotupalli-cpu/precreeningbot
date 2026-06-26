@@ -47,6 +47,7 @@ from tara_agent.coverage import CoverageTracker
 from tara_agent.gemini import make_classify_fn
 from tara_agent.latency import LatencyCollector
 from tara_agent.interview_agent import InterviewAgent
+from tara_agent.lifecycle import SessionLifecycle
 from tara_agent.metrics_export import TaraMetrics
 
 log = logging.getLogger("tara.worker")
@@ -218,8 +219,11 @@ async def entrypoint(ctx: JobContext):
         coverage=coverage,
         mongo_write_fn=lambda doc: mongo_col.insert_one(doc),
         settings=s,
-        on_end=done.set,
-        limiter=limiter,
+        # Natural end routes through the single unified teardown (which owns
+        # release). limiter=None so the agent's _on_end_and_release does NOT
+        # double-release — teardown is the sole release site.
+        on_end=lambda: asyncio.create_task(lifecycle.teardown("natural_end")),
+        limiter=None,
         room=ctx.room.name,
     )
 
@@ -291,15 +295,41 @@ async def entrypoint(ctx: JobContext):
         log.info("LATENCY_BREAKDOWN_P50=%s", payload)
         print("LATENCY_BREAKDOWN_P50=" + payload, flush=True)
 
-    # session "close" fires on candidate disconnect — flush promptly and release
-    # the entrypoint so the breakdown is printed well inside the harness window.
-    @session.on("close")
-    def _on_close(*_a):
-        asyncio.create_task(limiter.release(ctx.room.name))
+    # --- Unified, exactly-once teardown -------------------------------------
+    async def _teardown(reason: str):
+        log.info("teardown reason=%s", reason)
+        _flush_breakdown()                       # latency breakdown, once-guarded
+        await limiter.release(ctx.room.name)     # idempotent (ZSCORE-guarded Lua)
         done.set()
 
+    async def _resume():
+        # Candidate reconnected within grace: welcome back + re-ask the in-flight
+        # question = re-say the last Tara transcript line (it IS current_question;
+        # no separate Redis key needed — DRY).
+        lines = await transcript.assemble()
+        last_tara = next((l["text"] for l in reversed(lines) if l["speaker"] == "tara"), None)
+        msg = "Welcome back. " + (f"Let me repeat: {last_tara}" if last_tara else
+                                  "Let's continue.")
+        try:
+            await session.say(msg)
+        except Exception as e:  # never let resume crash the session
+            log.warning("resume say failed: %s", e)
+
+    candidate_identity = {"v": None}
+    lifecycle = SessionLifecycle(
+        candidate_id_getter=lambda: candidate_identity["v"],
+        grace_seconds=s.reconnect_grace_seconds,
+        on_resume=_resume,
+        on_teardown=_teardown,
+    )
+
+    # session "close" (provider/job close) funnels through the single teardown.
+    @session.on("close")
+    def _on_close(*_a):
+        asyncio.create_task(lifecycle.teardown("session_close"))
+
     async def _flush_on_shutdown():
-        _flush_breakdown()
+        await lifecycle.teardown("job_shutdown")
 
     ctx.add_shutdown_callback(_flush_on_shutdown)  # backstop if "close" path is missed
 
@@ -308,24 +338,35 @@ async def entrypoint(ctx: JobContext):
     _METRICS.session_started()
     _started["v"] = True
 
-    # Promote the reservation to a Tier-2 heartbeat lease now that the agent has
-    # joined (sets both mark_heartbeat and mark_participant flags).
-    await limiter.heartbeat(ctx.room.name, now_ms(),
-                            mark_heartbeat=True, mark_participant=True)
+    # Promote to Tier-2 heartbeat lease at agent join (heartbeat flag only;
+    # participant flag is set when the CANDIDATE actually joins — see below).
+    await limiter.heartbeat(ctx.room.name, now_ms(), mark_heartbeat=True)
 
     # Start background heartbeat, reaper, and metrics-sync loops.
     hb = asyncio.create_task(_heartbeat_loop())
     rp = asyncio.create_task(_reaper_loop())
     ms = asyncio.create_task(_metrics_sync_loop())
 
-    # Release the lease immediately when the candidate disconnects.
+    @ctx.room.on("participant_connected")
+    def _on_part_joined(p):
+        # First remote participant is the candidate. Record identity + set the
+        # participant flag so a lease lapse with a present candidate classifies
+        # as a FALSE reclaim (the hard-gate signal) — accurately, at candidate join.
+        if candidate_identity["v"] is None:
+            candidate_identity["v"] = p.identity
+            lifecycle.note_candidate(p.identity)
+            asyncio.create_task(limiter.heartbeat(ctx.room.name, now_ms(),
+                                                  mark_participant=True))
+        asyncio.create_task(lifecycle.participant_joined(p.identity))
+
+    # Candidate-only: a non-candidate (future proctor/observer) leaving must
+    # NOT start the grace timer or tear down (B3 guard inside SessionLifecycle).
     # "participant_disconnected" is the canonical livekit-rtc event name (verified
     # against installed livekit-rtc room.py — emitted as
     # self.emit("participant_disconnected", rparticipant)).
     @ctx.room.on("participant_disconnected")
     def _on_part_left(p):
-        asyncio.create_task(limiter.release(ctx.room.name))
-        done.set()
+        asyncio.create_task(lifecycle.participant_left(p.identity))
 
     # Greet the candidate and ask the first question.
     await session.generate_reply(

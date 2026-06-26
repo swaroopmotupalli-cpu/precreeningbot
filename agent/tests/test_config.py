@@ -66,3 +66,24 @@ def test_phase4_retry_defaults(monkeypatch):
     s = Settings()
     assert s.hot_retry_attempts == 2
     assert s.offpath_retry_attempts == 4
+
+def test_reconnect_grace_default(monkeypatch):
+    for k, v in {
+        "GEMINI_API_KEY": "g", "GOOGLE_APPLICATION_CREDENTIALS": "/c.json",
+        "REDIS_URL": "redis://x", "MONGODB_URI": "mongodb://x",
+        "LIVEKIT_URL": "wss://x", "LIVEKIT_API_KEY": "k", "LIVEKIT_API_SECRET": "s",
+    }.items():
+        monkeypatch.setenv(k, v)
+    s = Settings()
+    assert s.reconnect_grace_seconds == 25  # default, < reservation_lease_ttl (45)
+
+def test_reconnect_grace_must_be_under_lease(monkeypatch):
+    for k, v in {
+        "GEMINI_API_KEY": "g", "GOOGLE_APPLICATION_CREDENTIALS": "/c.json",
+        "REDIS_URL": "redis://x", "MONGODB_URI": "mongodb://x",
+        "LIVEKIT_URL": "wss://x", "LIVEKIT_API_KEY": "k", "LIVEKIT_API_SECRET": "s",
+        "RECONNECT_GRACE_SECONDS": "60", "RESERVATION_LEASE_TTL": "45",
+    }.items():
+        monkeypatch.setenv(k, v)
+    with pytest.raises(Exception):
+        Settings()
