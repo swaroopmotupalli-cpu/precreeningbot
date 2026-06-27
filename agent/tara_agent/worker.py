@@ -229,6 +229,7 @@ async def entrypoint(ctx: JobContext):
         on_end=lambda: asyncio.create_task(lifecycle.teardown("natural_end")),
         limiter=None,
         room=ctx.room.name,
+        enqueue_fn=lambda room: redis.lpush("tara:score:queue", room),
     )
 
     # Capture Tara's spoken lines into the transcript as they are committed.

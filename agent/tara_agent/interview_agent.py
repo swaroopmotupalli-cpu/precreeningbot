@@ -28,6 +28,7 @@ class InterviewAgent(Agent):
         on_end,
         limiter=None,
         room: str = "",
+        enqueue_fn=None,
     ):
         super().__init__(instructions=instructions)
         self._blob = blob
@@ -38,6 +39,7 @@ class InterviewAgent(Agent):
         self._on_end = on_end
         self._limiter = limiter
         self._room = room
+        self._enqueue_fn = enqueue_fn
         self._q_count = 0
         self._ending = False  # guard: ensure _wrap_up runs at most once
 
@@ -94,6 +96,9 @@ class InterviewAgent(Agent):
             room=room_name,
             contest_id=self._blob.contest_id,
             candidate_id=self._blob.candidate_id,
+            recruiter_id=self._blob.recruiter_id,
+            js_id=self._blob.js_id,
+            enqueue_fn=self._enqueue_fn,
             say_timeout=self._settings.say_timeout_seconds,
             write_timeout=self._settings.mongo_write_timeout_seconds,
             on_finally=self._on_end_and_release,
