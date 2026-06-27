@@ -34,3 +34,8 @@ def test_detects_candidate_first():
 
 def test_empty_transcript_is_clean():
     assert audit_transcript([]) == []
+
+
+def test_non_dict_line_does_not_raise():
+    probs = audit_transcript([{"seq": 0, "speaker": "tara", "text": "hi"}, "garbage", None])
+    assert any("non-dict" in p for p in probs)   # reported, not raised

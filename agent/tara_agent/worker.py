@@ -42,6 +42,7 @@ with warnings.catch_warnings():
 
 from tara_agent.drain import DrainController
 from tara_agent.config import get_settings
+from tara_agent.retry import retry_async
 from tara_agent.session_store import load_session
 from tara_agent.prompts import build_system_prompt
 from tara_agent.transcript import TranscriptStore
@@ -392,8 +393,15 @@ async def entrypoint(ctx: JobContext):
         asyncio.create_task(lifecycle.participant_left(p.identity))
 
     # Greet the candidate and ask the first question.
-    await session.generate_reply(
-        instructions="Greet the candidate warmly and ask your first interview question."
+    async def _greet():
+        return await session.generate_reply(
+            instructions="Greet the candidate warmly and ask your first interview question."
+        )
+    await retry_async(
+        _greet,
+        attempts=s.hot_retry_attempts,
+        base_delay=s.retry_base_delay_ms / 1000.0,
+        max_delay=s.retry_max_delay_ms / 1000.0,
     )
 
     await done.wait()
