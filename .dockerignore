@@ -1,0 +1,30 @@
+# Root .dockerignore — applied when either image is built from the repo root
+# (docker build -f agent/Dockerfile . OR -f backend/Dockerfile .).
+# Prevents secret material from entering the build context.
+
+.env
+*.json
+ai-interview-*.json
+*-service-account*.json
+gcp-*.json
+
+# Python artifacts
+agent/.venv/
+agent/__pycache__/
+agent/*.pyc
+agent/.pytest_cache/
+agent/tara_agent.egg-info/
+agent/tests/
+
+# Node artifacts
+backend/node_modules/
+backend/test/
+backend/coverage/
+backend/*.log
+
+# Misc
+.git/
+.superpowers/
+docs/
+tools/
+deploy/

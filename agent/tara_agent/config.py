@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -30,6 +31,23 @@ class Settings(BaseSettings):
     # Prometheus /metrics exporter (Phase 3)
     metrics_port: int = 9091
     metric_scrape_interval: int = 5
+    # Phase 4 — bounded retry (calls we control)
+    hot_retry_attempts: int = 2        # greeting/hot path: 1 retry max
+    offpath_retry_attempts: int = 4    # coverage tagger + mongo write
+    retry_base_delay_ms: int = 50
+    retry_max_delay_ms: int = 400
+    # Phase 4 — reconnect grace window (MUST be < reservation_lease_ttl)
+    reconnect_grace_seconds: int = 25
+
+    @model_validator(mode="after")
+    def _grace_under_lease(self):
+        if self.reconnect_grace_seconds >= self.reservation_lease_ttl:
+            raise ValueError(
+                "reconnect_grace_seconds must be < reservation_lease_ttl "
+                "(a grace window past the Tier-1 lease risks the reaper reclaiming "
+                "a slot we still intend to hold)"
+            )
+        return self
 
 @lru_cache
 def get_settings() -> Settings:

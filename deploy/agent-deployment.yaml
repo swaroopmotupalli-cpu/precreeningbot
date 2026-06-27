@@ -95,19 +95,20 @@ spec:
               memory: 1Gi
           # --- Drain safety (RELIABILITY, not nicety) -----------------------
           # On scale-down / rollout, k8s sends SIGTERM to the container. The
-          # LiveKit Agents worker drains in-flight jobs on SIGTERM (stops
-          # accepting new dispatch, lets live interviews finish). This preStop
-          # hook simply HOLDS the pod in Terminating long enough for that
-          # SIGTERM-driven drain to complete before the grace period kills it.
-          # There is no documented HTTP drain endpoint on the worker today, so
-          # a sleep is the cleanest expressible drain; a dedicated drain
-          # endpoint is a Phase-4 hardening follow-up.
-          # INVARIANT: terminationGracePeriodSeconds (120) MUST exceed this
-          # sleep (110) so the kubelet does not SIGKILL mid-drain.
+          # worker's SIGTERM handler calls DrainController.request_drain() and
+          # waits for in-flight sessions to finish (up to 110 s). This preStop
+          # hook signals PID 1 and then waits for it to exit, so a pod with
+          # zero live sessions terminates immediately instead of idling for the
+          # full grace period. terminationGracePeriodSeconds (120) is the
+          # safety ceiling.
           lifecycle:
             preStop:
               exec:
-                command: ["/bin/sh", "-c", "sleep 110"]
+                # Real drain: signal the worker (PID 1) to stop taking new jobs and
+                # finish in-flight interviews, then wait for it to exit. A pod with
+                # zero live sessions terminates immediately instead of idling.
+                # terminationGracePeriodSeconds (120) is the safety ceiling.
+                command: ["/bin/sh", "-c", "kill -TERM 1; while kill -0 1 2>/dev/null; do sleep 1; done"]
       # Grace period must comfortably exceed the max expected in-flight
       # interview drain (a turn + tail) and the preStop sleep above. The 45s
       # Tier-1 lease + interview length drives this floor; 120 calibrated by

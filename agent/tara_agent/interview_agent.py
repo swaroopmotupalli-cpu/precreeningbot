@@ -63,6 +63,14 @@ class InterviewAgent(Agent):
         """Append a Tara (assistant) line to the transcript store."""
         await self._transcript.append("tara", text)
 
+    async def on_interruption(self, spoken_text: str) -> None:
+        """Barge-in: truncate Tara's last line to only what was actually spoken.
+
+        The Mongo transcript is an audit artifact — it must match reality, never
+        the full intended sentence. No-op if there is no Tara line yet.
+        """
+        await self._transcript.truncate_last("tara", spoken_text)
+
     def _on_end_and_release(self):
         """Called in the guaranteed finally of end_interview.
 
@@ -89,4 +97,7 @@ class InterviewAgent(Agent):
             say_timeout=self._settings.say_timeout_seconds,
             write_timeout=self._settings.mongo_write_timeout_seconds,
             on_finally=self._on_end_and_release,
+            offpath_retry_attempts=self._settings.offpath_retry_attempts,
+            retry_base_delay_ms=self._settings.retry_base_delay_ms,
+            retry_max_delay_ms=self._settings.retry_max_delay_ms,
         )
