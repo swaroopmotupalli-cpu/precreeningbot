@@ -94,7 +94,11 @@ async def test_end_interview_persists_ids_and_enqueues():
         transcript_store=_T(), mongo_write_fn=mongo_write,
         room="room1", contest_id="c1", candidate_id="u1",
         recruiter_id="rec1", js_id="js1", enqueue_fn=enqueue,
+        resume_text="r", jd_text="j", skills=["Python"],
         say_timeout=1.0, write_timeout=1.0, on_finally=lambda: None,
     )
     assert written["recruiterId"] == "rec1" and written["jsId"] == "js1"
     assert enqueued == ["room1"]   # enqueued once, after the write
+    assert written["resumeText"] == "r"
+    assert written["jdText"] == "j"
+    assert written["skills"] == ["Python"]

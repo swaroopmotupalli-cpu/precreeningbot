@@ -37,3 +37,10 @@ test("timeout returns null", async () => {
   const r = fakeRedis({});
   expect(await consumeOnce(r, async () => {}, OPTS)).toBeNull();
 });
+
+test("clears attempts counter after successful process", async () => {
+  const r = fakeRedis({ q: ["s1"] });
+  r.counters["tara:score:attempts:s1"] = 2;
+  await consumeOnce(r, async () => {}, OPTS);
+  expect(r.counters["tara:score:attempts:s1"]).toBeUndefined();
+});

@@ -5,6 +5,7 @@ async function consumeOnce(redis, handle, { queue, dlq, maxAttempts }) {
   const sessionId = popped[1];
   try {
     await handle(sessionId);
+    await redis.del(`tara:score:attempts:${sessionId}`);
   } catch (e) {
     const n = await redis.incr(`tara:score:attempts:${sessionId}`);
     if (n >= maxAttempts) {
