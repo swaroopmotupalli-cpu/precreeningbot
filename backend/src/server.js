@@ -1,3 +1,4 @@
+const path = require("path");
 const express = require("express");
 const Redis = require("ioredis");
 const { AccessToken } = require("livekit-server-sdk");
@@ -10,6 +11,10 @@ const app = express();
 app.use(express.json({ limit: "2mb" }));
 const redis = new Redis(process.env.REDIS_URL);
 app.get("/healthz", makeHealthz(redis));
+
+// Static test UI (candidate-side flow tester) — served same-origin so the
+// /sessions fetch needs no CORS. Open http://localhost:3000/ in a browser.
+app.use(express.static(path.join(__dirname, "..", "public")));
 
 const cfg = loadLimiterConfig(process.env);
 const limiter = new Limiter(redis, {
