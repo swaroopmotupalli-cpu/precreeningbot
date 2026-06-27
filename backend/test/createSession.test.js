@@ -55,3 +55,16 @@ test("rejected session blob is re-expired to a short TTL", async () => {
   expect(expireCall).toBeTruthy();
   expect(expireCall[2]).toBe(120);
 });
+
+test("stores recruiterId and jsId in the session blob", async () => {
+  const store = {};
+  const redis = { set: async (k, v) => { store[k] = v; } };
+  const fakeLimiter = { tryAdmit: async () => ({ admitted: true, state: "new" }) };
+  const out = await createSession(redis, () => "tok", fakeLimiter, {
+    contestId: "c1", candidateId: "u1", skills: ["Python"],
+    resumeText: "r", jdText: "j", recruiterId: "rec1", jsId: "js1",
+  });
+  const blob = JSON.parse(store[`session:${out.sessionId}`]);
+  expect(blob.recruiterId).toBe("rec1");
+  expect(blob.jsId).toBe("js1");
+});

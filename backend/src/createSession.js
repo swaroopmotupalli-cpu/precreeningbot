@@ -10,6 +10,7 @@ async function createSession(redis, tokenFactory, limiter, body, opts = {}) {
   const blob = {
     contestId: body.contestId, candidateId: body.candidateId,
     skills: body.skills, resumeText: body.resumeText, jdText: body.jdText,
+    recruiterId: body.recruiterId ?? "", jsId: body.jsId ?? "",
     maxQuestions: body.maxQuestions ?? 12, status: "created",
   };
   await redis.set(`session:${sessionId}`, JSON.stringify(blob), "EX", 7200);

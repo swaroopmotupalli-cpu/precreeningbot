@@ -12,6 +12,8 @@ class SessionBlob:
     resume_text: str
     jd_text: str
     max_questions: int
+    recruiter_id: str = ""
+    js_id: str = ""
 
 async def load_session(redis, session_id: str) -> SessionBlob:
     raw = await redis.get(f"session:{session_id}")
@@ -22,4 +24,5 @@ async def load_session(redis, session_id: str) -> SessionBlob:
         contest_id=d["contestId"], candidate_id=d["candidateId"],
         skills=d["skills"], resume_text=d["resumeText"],
         jd_text=d["jdText"], max_questions=d.get("maxQuestions", 12),
+        recruiter_id=d.get("recruiterId", ""), js_id=d.get("jsId", ""),
     )
