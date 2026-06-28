@@ -152,6 +152,10 @@ async def entrypoint(ctx: JobContext):
         ),
         llm=google.LLM(
             model=s.gemini_model,
+            # Gemini Developer API key — the plugin otherwise only reads
+            # GOOGLE_API_KEY from env; we carry it as GEMINI_API_KEY, so pass it
+            # explicitly. (STT/TTS authenticate separately via the SA JSON / ADC.)
+            api_key=s.gemini_api_key,
             # LLM latency note: base TTFT from a local India laptop to the global
             # Gemini Developer API is ~1.3s. Vertex AI in-region (the analog of the
             # STT region fix) is NOT available on this project, so the Developer API
