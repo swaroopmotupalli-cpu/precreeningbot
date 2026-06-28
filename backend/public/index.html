@@ -46,6 +46,7 @@
 <header>
   <h1>🎙️ Tara — Interview Flow Tester</h1>
   <span id="status" class="pill idle">idle</span>
+  <span id="mic" class="pill idle">🎤 mic —</span>
   <span id="sid"></span>
 </header>
 <div class="wrap">
@@ -85,6 +86,38 @@ let room = null;
 function setStatus(text, cls) { const s = $("status"); s.textContent = text; s.className = "pill " + cls; }
 function log(msg) { const el = $("log"); el.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`; el.scrollTop = el.scrollHeight; }
 function clearTranscript() { $("transcript").innerHTML = ""; }
+
+// Live mic-level meter: proves the browser is actually capturing your voice.
+// If this stays "mic 0%" while you talk, the problem is your mic/permission/device,
+// not the worker. If it moves but Tara doesn't respond, the issue is server-side.
+let micPeakSeen = false;
+function startMicMeter() {
+  try {
+    let micTrack = null;
+    room.localParticipant.trackPublications.forEach((p) => {
+      if (p.track && p.kind === "audio" && p.track.mediaStreamTrack) micTrack = p.track;
+    });
+    if (!micTrack) { log("mic meter: no local audio track found"); return; }
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const src = ac.createMediaStreamSource(new MediaStream([micTrack.mediaStreamTrack]));
+    const analyser = ac.createAnalyser(); analyser.fftSize = 512;
+    src.connect(analyser);
+    const buf = new Uint8Array(analyser.frequencyBinCount);
+    const el = $("mic");
+    function tick() {
+      if (!room) return;
+      analyser.getByteTimeDomainData(buf);
+      let peak = 0; for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
+      const pct = Math.min(100, Math.round((peak / 128) * 200)); // amplify for visibility
+      el.textContent = "🎤 mic " + pct + "%";
+      el.className = "pill " + (pct > 8 ? "live" : "idle");
+      if (pct > 8 && !micPeakSeen) { micPeakSeen = true; log("mic meter: capturing audio ✅ (you can be heard by the browser)"); }
+      requestAnimationFrame(tick);
+    }
+    tick();
+    log("mic meter started — speak and watch the 🎤 indicator.");
+  } catch (e) { log("mic meter error: " + e.message); }
+}
 
 // Live transcript: one bubble per speaker, updated in place while a segment is non-final.
 const bubbles = {}; // id -> element
@@ -216,6 +249,7 @@ async function startInterview() {
     log("Microphone live. Tara should greet you shortly.");
     setStatus("connected — listening", "live");
     $("end").style.display = "inline-block";
+    startMicMeter();
   } catch (e) {
     setStatus("connect/mic failed", "err");
     log("Connect or mic error: " + e.message + " (check LIVEKIT_URL reachability and grant mic permission).");
