@@ -168,26 +168,45 @@ async function startInterview() {
     $("end").style.display = "none"; $("start").disabled = false;
   });
 
-  // Live transcript via LiveKit text streams (agent transcription, topic lk.transcription).
+  // SIDs of the candidate's own (local) published tracks — a transcription whose
+  // transcribed track is one of these is the CANDIDATE's speech; anything else is Tara.
+  function localTrackSids() {
+    const s = new Set();
+    room.localParticipant.trackPublications.forEach((p) => { if (p.trackSid) s.add(p.trackSid); });
+    return s;
+  }
+  function speakerFor(attrs, participantInfo) {
+    const trackId = attrs && attrs["lk.transcribed_track_id"];
+    if (trackId && localTrackSids().has(trackId)) return "candidate";
+    // The agent forwards BOTH transcriptions, so senderIdentity is the agent for
+    // both; trackId above is the reliable signal. Fall back to sender identity.
+    if (participantInfo && participantInfo.identity === room.localParticipant.identity) return "candidate";
+    return "tara";
+  }
+
+  // Live transcript via LiveKit text streams (topic lk.transcription) — SINGLE handler.
+  let transcriptionWired = false;
   try {
-    room.registerTextStreamHandler("lk.transcription", async (reader, info) => {
-      const pid = info?.attributes?.["lk.transcribed_track_id"] ? "tara" :
-                  (reader.info?.attributes?.["lk.segment_id"] ? "candidate" : "candidate");
-      const speaker = (info?.attributes?.["lk.transcription_final"] !== undefined &&
-                       info?.senderIdentity && info.senderIdentity !== room.localParticipant.identity) ? "tara" : "candidate";
-      const id = info?.id || (info?.attributes?.["lk.segment_id"]) || Math.random().toString(36);
+    room.registerTextStreamHandler("lk.transcription", async (reader, participantInfo) => {
+      const attrs = (reader.info && reader.info.attributes) || {};
+      const speaker = speakerFor(attrs, participantInfo);
+      const id = (reader.info && reader.info.id) || attrs["lk.segment_id"] || ("seg-" + Date.now());
+      log("transcript[" + speaker + "] track=" + (attrs["lk.transcribed_track_id"] || "-"));
       let full = "";
       for await (const chunk of reader) { full += chunk; upsertSegment(speaker, id, full, false); }
       upsertSegment(speaker, id, full, true);
     });
-  } catch (e) { log("Transcription stream handler not available in this SDK build: " + e.message); }
+    transcriptionWired = true;
+    log("Transcription handler registered (text stream).");
+  } catch (e) { log("Text-stream transcription unavailable: " + e.message); }
 
-  // Fallback for older SDKs that emit TranscriptionReceived events.
-  if (LK.RoomEvent.TranscriptionReceived) {
+  // Fallback ONLY if the text-stream API isn't present (older SDKs) — avoids double bubbles.
+  if (!transcriptionWired && LK.RoomEvent.TranscriptionReceived) {
     room.on(LK.RoomEvent.TranscriptionReceived, (segments, participant) => {
       const speaker = participant && participant.identity !== room.localParticipant.identity ? "tara" : "candidate";
       for (const s of segments) upsertSegment(speaker, s.id, s.text, s.final);
     });
+    log("Transcription handler registered (event fallback).");
   }
 
   try {
