@@ -413,4 +413,12 @@ async def entrypoint(ctx: JobContext):
 
 
 if __name__ == "__main__":
+    # Load the repo-root .env so the LiveKit worker bootstrap (which reads
+    # LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET from os.environ BEFORE
+    # entrypoint runs) finds them when launched from agent/. No-op in k8s where
+    # env comes from ConfigMap/Secret and no .env file exists; load_dotenv does
+    # NOT override variables already set in the environment.
+    from pathlib import Path
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))

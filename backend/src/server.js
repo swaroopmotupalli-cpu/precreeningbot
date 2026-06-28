@@ -1,3 +1,7 @@
+// Load repo-root .env for local runs (no-op in k8s where env comes from
+// ConfigMap/Secret; never overrides already-set vars). Must run before any
+// process.env read below (e.g. the Redis client + token minting).
+require("dotenv").config({ path: require("path").join(__dirname, "..", "..", ".env") });
 const path = require("path");
 const express = require("express");
 const Redis = require("ioredis");
