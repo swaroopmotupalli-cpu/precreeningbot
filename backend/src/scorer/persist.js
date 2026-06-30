@@ -22,7 +22,8 @@ async function persistReport(db, p) {
   await db.collection("recruiterAddProfiles").updateOne(
     { contestId: cOid, recruiterId: rOid, "jobseekerDetails.jsId": jOid },
     { $set: {
-      "jobseekerDetails.$.prescreeningreport": report,
+      // store the inner prescreeningreport object (report === {prescreeningreport})
+      "jobseekerDetails.$.prescreeningreport": (report && report.prescreeningreport) || report,
       "jobseekerDetails.$.copilotScore": verdict.copilotScore,
       "jobseekerDetails.$.prescreeningStatus": "True",
     } },

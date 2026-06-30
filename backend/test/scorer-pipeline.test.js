@@ -9,27 +9,35 @@ test("not found returns ok:false", async () => {
 
 test("happy path scores and persists", async () => {
   const writes = [];
+  const aiDocs = [];
   const db = {
     collection(name) {
       return {
         findOne: async (q) => {
           if (name === "aiInterview") return {
             room: "s1", contestId: "c", candidateId: "u", recruiterId: "", jsId: "",
+            jdText: "JD", resumeText: "Resume",
             transcript: [{ seq: 0, speaker: "tara", text: "Q?" }, { seq: 1, speaker: "candidate", text: "A" }],
           };
           return null; // contests / profile miss → fallbacks
         },
-        deleteMany: async () => {}, insertOne: async (d) => writes.push(name),
+        deleteMany: async () => {},
+        insertOne: async (d) => { writes.push(name); if (name === "aiInterview") aiDocs.push(d); },
         updateOne: async () => ({ modifiedCount: 1 }),
       };
     },
   };
   const gemini = async () => JSON.stringify({
-    overall_evaluation: "x", recommendation: "Hire", key_strengths: [],
-    remarks: { communication: "ok" }, primarySkillsRatings: [{ skill: "Python", rating: 4 }],
-    secondarySkillsRatings: [], comment: "c",
+    questions: [{ score: 4, keywords: ["intro"] }], // 1 Q&A pair built from the transcript
+    overall_evaluation: "x", key_strengths: [], areas_for_improvement: [],
+    remarks: { communication: "ok" }, primarySkillsRatings: [], secondarySkillsRatings: [], comment: "c",
   });
   const out = await scoreSession({ db, geminiCall: gemini }, "s1");
   expect(out.ok).toBe(true);
   expect(writes).toContain("aiInterview");
+  // the rich report (with detailed_qa) is what gets persisted
+  const pr = aiDocs[0].report.prescreeningreport;
+  expect(pr.detailed_qa[0]).toMatchObject({ question: "Q?", answer: "A", score: 4 });
+  expect(pr.candidate_details.job_description).toBe("JD");
+  expect(out.overall_score).toBe(4);
 });

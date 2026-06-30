@@ -21,18 +21,22 @@ test("writes aiInterview + recruiterAddProfiles $set + auditTrail with valid ids
   const jsId = new ObjectId().toString();
   const contestId = new ObjectId().toString();
   const profileDoc = { jobseekerDetails: [{ jsId: new ObjectId(jsId), firstName: "Ada", lastName: "L" }] };
+  const inner = { interviewer: "Tara (Senior Technical Interviewer)", detailed_qa: [{ question: "q", answer: "a", score: 4, keywords: [] }] };
   const out = await persistReport(mockDb(calls, profileDoc), {
     sessionId: "s1", contestId, candidateId: "u1", recruiterId, jsId,
-    report: { recommendation: "Hire" },
-    verdict: { avg: 7.2, recommendation: "Hire", empStatus: "Completed", copilotScore: 72 },
+    report: { prescreeningreport: inner },   // report === { prescreeningreport }
+    verdict: { overall_score: 7.2, recommendation: "Hire", empStatus: "Completed", copilotScore: 72 },
   });
   expect(out.ats).toBe(true);
   const ai = calls.find((c) => c[0] === "insertOne" && c[1] === "aiInterview")[2];
   expect(ai.session_id).toBe("s1");
   expect(ai.prescreening_status).toBe("True");
+  expect(ai.report.prescreeningreport.detailed_qa).toHaveLength(1); // full envelope stored in aiInterview
   const upd = calls.find((c) => c[0] === "updateOne" && c[1] === "recruiterAddProfiles")[3];
   expect(upd.$set["jobseekerDetails.$.copilotScore"]).toBe(72);
-  expect(upd.$set["jobseekerDetails.$.prescreeningreport"]).toBeDefined();
+  // the profile gets the INNER prescreeningreport object, not the {prescreeningreport} wrapper
+  expect(upd.$set["jobseekerDetails.$.prescreeningreport"]).toBe(inner);
+  expect(upd.$set["jobseekerDetails.$.prescreeningreport"].detailed_qa).toHaveLength(1);
   // scoring must NOT change the candidate's pipeline stage:
   expect(upd.$set["jobseekerDetails.$.empStatus"]).toBeUndefined();
   expect(upd.$set["jobseekerDetails.$.status"]).toBeUndefined();
