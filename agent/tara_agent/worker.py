@@ -83,7 +83,9 @@ async def entrypoint(ctx: JobContext):
     }
 
     redis = aioredis.from_url(s.redis_url, decode_responses=True)
-    mongo_col = AsyncIOMotorClient(s.mongodb_uri)["tara"]["aiInterview"]
+    # Transcript persists to the Marketplace ATS DB (same DB the scorer reads
+    # from and writes recruiterAddProfiles/auditTrail to — NOT a separate "tara" db).
+    mongo_col = AsyncIOMotorClient(s.mongodb_uri)["Marketplace"]["aiInterview"]
 
     # --- Admission limiter -------------------------------------------------------
     from tara_agent.limiter import Limiter, Caps

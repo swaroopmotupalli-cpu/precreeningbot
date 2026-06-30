@@ -25,7 +25,10 @@ async function geminiCall(prompt) {
 async function main() {
   const mongo = new MongoClient(process.env.MONGODB_URI);
   await mongo.connect();
-  const db = mongo.db("tara");
+  // Marketplace ATS DB: reads aiInterview transcripts (written by the worker) +
+  // contests, and writes the report to aiInterview/recruiterAddProfiles/auditTrail
+  // so scores reach the recruiter's ATS (the "tara" db was a dead end).
+  const db = mongo.db("Marketplace");
   const redis = new Redis(process.env.REDIS_URL);
   let stopping = false;
   const stop = () => stopping;
