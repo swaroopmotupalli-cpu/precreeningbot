@@ -6,7 +6,7 @@ asyncio.create_task (fire-and-forget). Scoring (Task 11) runs after the session 
 import asyncio
 import logging
 
-from livekit.agents import Agent
+from livekit.agents import Agent, StopResponse
 from tara_agent.coverage import CoverageTracker
 from tara_agent.interview import should_end
 from tara_agent.transcript import TranscriptStore
@@ -60,6 +60,10 @@ class InterviewAgent(Agent):
         ):
             self._ending = True
             await self._wrap_up()
+            # Suppress the framework's default reply for this turn — otherwise
+            # Tara asks a NEW question right after the closing statement. The
+            # goodbye was already spoken inside _wrap_up.
+            raise StopResponse()
 
     async def on_tara_line(self, text: str):
         """Append a Tara (assistant) line to the transcript store."""
