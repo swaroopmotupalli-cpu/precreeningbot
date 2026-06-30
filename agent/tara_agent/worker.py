@@ -426,7 +426,14 @@ if __name__ == "__main__":
     # entrypoint runs) finds them when launched from agent/. No-op in k8s where
     # env comes from ConfigMap/Secret and no .env file exists; load_dotenv does
     # NOT override variables already set in the environment.
+    import os
     from pathlib import Path
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).resolve().parents[2] / ".env")
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+    # Named agent → EXPLICIT dispatch: this worker only joins rooms whose token
+    # requests this agent_name (the backend embeds it in the candidate token's
+    # roomConfig). Must match AGENT_NAME on the backend (both default "tara_agent").
+    cli.run_app(WorkerOptions(
+        entrypoint_fnc=entrypoint,
+        agent_name=os.environ.get("AGENT_NAME", "tara_agent"),
+    ))

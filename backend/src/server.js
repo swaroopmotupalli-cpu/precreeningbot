@@ -6,7 +6,9 @@ const path = require("path");
 const express = require("express");
 const Redis = require("ioredis");
 const { MongoClient } = require("mongodb");
-const { AccessToken } = require("livekit-server-sdk");
+const { AccessToken, RoomConfiguration, RoomAgentDispatch } = require("livekit-server-sdk");
+// Explicit dispatch target — must match the worker's WorkerOptions(agent_name=...).
+const AGENT_NAME = process.env.AGENT_NAME || "tara_agent";
 const { createSession } = require("./createSession");
 const { Limiter } = require("./limiter");
 const { loadLimiterConfig } = require("./limiterConfig");
@@ -46,6 +48,11 @@ async function mintToken(room, identity) {
   const at = new AccessToken(process.env.LIVEKIT_API_KEY,
                              process.env.LIVEKIT_API_SECRET, { identity });
   at.addGrant({ roomJoin: true, room });
+  // Dispatch the named "tara_agent" worker into this room when the candidate
+  // joins (the worker uses explicit dispatch, so it won't auto-join otherwise).
+  at.roomConfig = new RoomConfiguration({
+    agents: [new RoomAgentDispatch({ agentName: AGENT_NAME })],
+  });
   return await at.toJwt();
 }
 
