@@ -32,7 +32,10 @@ test("writes aiInterview + recruiterAddProfiles $set + auditTrail with valid ids
   expect(ai.prescreening_status).toBe("True");
   const upd = calls.find((c) => c[0] === "updateOne" && c[1] === "recruiterAddProfiles")[3];
   expect(upd.$set["jobseekerDetails.$.copilotScore"]).toBe(72);
-  expect(upd.$set["jobseekerDetails.$.empStatus"]).toBe("Completed");
+  expect(upd.$set["jobseekerDetails.$.prescreeningreport"]).toBeDefined();
+  // scoring must NOT change the candidate's pipeline stage:
+  expect(upd.$set["jobseekerDetails.$.empStatus"]).toBeUndefined();
+  expect(upd.$set["jobseekerDetails.$.status"]).toBeUndefined();
   const audit = calls.find((c) => c[0] === "insertOne" && c[1] === "auditTrail")[2];
   expect(audit.action).toBe("Prescreening Completed");
   expect(audit.userName).toBe("Ada L");

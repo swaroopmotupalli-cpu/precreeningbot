@@ -17,14 +17,14 @@ async function persistReport(db, p) {
   if (!cOid || !rOid || !jOid) return { ats: false };
 
   // 2. recruiterAddProfiles — positional $set on the matched jobseeker.
+  // NOTE: deliberately does NOT touch empStatus/status — scoring must not move
+  // the candidate's recruiter-pipeline stage; it only attaches the report+score.
   await db.collection("recruiterAddProfiles").updateOne(
     { contestId: cOid, recruiterId: rOid, "jobseekerDetails.jsId": jOid },
     { $set: {
       "jobseekerDetails.$.prescreeningreport": report,
       "jobseekerDetails.$.copilotScore": verdict.copilotScore,
       "jobseekerDetails.$.prescreeningStatus": "True",
-      "jobseekerDetails.$.empStatus": verdict.empStatus,
-      "jobseekerDetails.$.status": verdict.empStatus,
     } },
   );
 
