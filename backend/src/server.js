@@ -5,6 +5,7 @@ require("dotenv").config({ path: require("path").join(__dirname, "..", "..", ".e
 const path = require("path");
 const express = require("express");
 const Redis = require("ioredis");
+const { MongoClient } = require("mongodb");
 const { AccessToken } = require("livekit-server-sdk");
 const { createSession } = require("./createSession");
 const { Limiter } = require("./limiter");
@@ -15,6 +16,16 @@ const app = express();
 app.use(express.json({ limit: "2mb" }));
 const redis = new Redis(process.env.REDIS_URL);
 app.get("/healthz", makeHealthz(redis));
+
+// Marketplace DB — source of JD (contests) + candidate (jobSeekerProfile).
+const mongo = new MongoClient(process.env.MONGODB_URI);
+let marketplaceDb = null;
+mongo.connect()
+  .then(() => { marketplaceDb = mongo.db("Marketplace"); console.log("connected to Marketplace DB"); })
+  .catch((e) => console.error("Mongo connect failed:", e.message));
+
+// Map loadContext NotFoundError codes to HTTP status.
+const NOT_FOUND_CODES = new Set(["CONTEST_NOT_FOUND", "JOBSEEKER_NOT_FOUND", "INVALID_CONTEST_ID", "INVALID_JS_ID"]);
 
 // Static test UI (candidate-side flow tester) — served same-origin so the
 // /sessions fetch needs no CORS. Open http://localhost:3000/ in a browser.
@@ -40,13 +51,15 @@ async function mintToken(room, identity) {
 
 app.post("/sessions", async (req, res) => {
   try {
+    if (!marketplaceDb) return res.status(503).json({ error: "Marketplace DB not connected yet" });
     const result = await createSession(redis, mintToken, limiter, req.body,
-                                       { rejectedBlobTtl: cfg.rejectedBlobTtl });
+                                       { rejectedBlobTtl: cfg.rejectedBlobTtl, db: marketplaceDb });
     if (result.status === "queued") {
       return res.status(503).json(result);
     }
     res.json(result);
   } catch (e) {
+    if (NOT_FOUND_CODES.has(e.code)) return res.status(404).json({ error: e.message, code: e.code });
     res.status(400).json({ error: e.message });
   }
 });

@@ -52,20 +52,13 @@
 <div class="wrap">
   <div class="col left">
     <form id="form" onsubmit="return false">
-      <div class="row">
-        <div><label>Contest ID</label><input id="contestId" value="test-contest-1" /></div>
-        <div><label>Candidate ID</label><input id="candidateId" value="cand-1" /></div>
-      </div>
-      <label>Must-have skills (comma-separated)</label>
-      <input id="skills" value="Python, SQL, System Design" />
-      <label>Resume text</label>
-      <textarea id="resumeText">5 years backend Python, data pipelines, and distributed systems. Led migration to event-driven architecture.</textarea>
-      <label>Job description text</label>
-      <textarea id="jdText">Backend engineer: Python, SQL, 3+ years, system design and scalability.</textarea>
-      <div class="row">
-        <div><label>Recruiter ID (ObjectId, optional)</label><input id="recruiterId" placeholder="for ATS write-back" /></div>
-        <div><label>Jobseeker ID (ObjectId, optional)</label><input id="jsId" placeholder="for ATS write-back" /></div>
-      </div>
+      <p style="color:var(--muted);font-size:12px;margin:0 0 6px">JD + resume are pulled from the Marketplace DB using these IDs.</p>
+      <label>Contest ID (ObjectId)</label>
+      <input id="contestId" value="68931362af8c8e846afbe0fb" />
+      <label>Jobseeker ID (ObjectId)</label>
+      <input id="jsId" value="6895bd580d790be21e0a95e1" />
+      <label>Recruiter ID (ObjectId)</label>
+      <input id="recruiterId" value="68bfc07706bd7917f89b4262" />
       <label>Max questions</label>
       <input id="maxQuestions" type="number" value="4" min="1" max="20" />
       <button id="start">Start interview</button>
@@ -85,7 +78,11 @@ let room = null;
 
 function setStatus(text, cls) { const s = $("status"); s.textContent = text; s.className = "pill " + cls; }
 function log(msg) { const el = $("log"); el.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`; el.scrollTop = el.scrollHeight; }
-function clearTranscript() { $("transcript").innerHTML = ""; }
+function clearTranscript() {
+  $("transcript").innerHTML = "";
+  if (typeof bubbles === "object") Object.keys(bubbles).forEach((k) => delete bubbles[k]);
+  if (typeof lastFinal === "object") { lastFinal.tara = { text: null, el: null }; lastFinal.candidate = { text: null, el: null }; }
+}
 
 // Live mic-level meter: proves the browser is actually capturing your voice.
 // If this stays "mic 0%" while you talk, the problem is your mic/permission/device,
@@ -121,6 +118,11 @@ function startMicMeter() {
 
 // Live transcript: one bubble per speaker, updated in place while a segment is non-final.
 const bubbles = {}; // id -> element
+// LiveKit can deliver the SAME utterance as two transcription streams with
+// different ids (interim + final), producing duplicate bubbles. Track each
+// speaker's last finalized turn so we can drop an exact duplicate.
+const lastFinal = { tara: { text: null, el: null }, candidate: { text: null, el: null } };
+const norm = (t) => (t || "").trim().toLowerCase().replace(/\s+/g, " ");
 function upsertSegment(speaker, id, text, isFinal) {
   let el = bubbles[id];
   if (!el) {
@@ -131,7 +133,15 @@ function upsertSegment(speaker, id, text, isFinal) {
     bubbles[id] = el;
   }
   el.querySelector(".txt").textContent = text;
-  if (isFinal) el.style.opacity = "1"; else el.style.opacity = "0.7";
+  el.style.opacity = isFinal ? "1" : "0.7";
+  if (isFinal) {
+    const lf = lastFinal[speaker] || { text: null, el: null };
+    if (lf.el && lf.el !== el && norm(text) === lf.text) {
+      el.remove(); delete bubbles[id];   // duplicate of the previous final turn
+      return;
+    }
+    lastFinal[speaker] = { text: norm(text), el };
+  }
   $("transcript").scrollTop = $("transcript").scrollHeight;
 }
 
@@ -142,14 +152,10 @@ async function startInterview() {
 
   const body = {
     contestId: $("contestId").value.trim(),
-    candidateId: $("candidateId").value.trim(),
-    skills: $("skills").value.split(",").map((s) => s.trim()).filter(Boolean),
-    resumeText: $("resumeText").value,
-    jdText: $("jdText").value,
+    jsId: $("jsId").value.trim(),
+    recruiterId: $("recruiterId").value.trim(),
     maxQuestions: Number($("maxQuestions").value) || 4,
   };
-  if ($("recruiterId").value.trim()) body.recruiterId = $("recruiterId").value.trim();
-  if ($("jsId").value.trim()) body.jsId = $("jsId").value.trim();
 
   let resp, data;
   try {
@@ -161,9 +167,14 @@ async function startInterview() {
     setStatus("backend unreachable", "err"); log("POST /sessions failed: " + e.message); $("start").disabled = false; return;
   }
 
+  if (resp.status === 404) {
+    setStatus("not found", "err");
+    log("Lookup failed (" + (data.code || "404") + "): " + data.error + " — check the contestId/jsId exist in Marketplace.");
+    $("start").disabled = false; return;
+  }
   if (resp.status === 503) {
-    setStatus("queued (cap full): " + data.bucket, "warn");
-    log("Admission rejected — bucket=" + data.bucket + " (the limiter is at capacity; try again shortly).");
+    if (data.bucket) { setStatus("queued (cap full): " + data.bucket, "warn"); log("Admission rejected — bucket=" + data.bucket + " (limiter at capacity; retry shortly)."); }
+    else { setStatus("backend not ready", "err"); log("503: " + (data.error || "service unavailable")); }
     $("start").disabled = false; return;
   }
   if (!resp.ok || !data.token) {
@@ -172,7 +183,7 @@ async function startInterview() {
   }
 
   $("sid").textContent = "session: " + data.sessionId;
-  log("Session created. Connecting to LiveKit at " + data.livekitUrl + " …");
+  log("Session created for " + (data.candidateName || "candidate") + " — role: " + (data.jobTitle || "?") + ". Connecting to LiveKit …");
 
   room = new LK.Room({ adaptiveStream: true, dynacast: true });
 
