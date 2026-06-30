@@ -87,3 +87,15 @@ def test_reconnect_grace_must_be_under_lease(monkeypatch):
         monkeypatch.setenv(k, v)
     with pytest.raises(Exception):
         Settings()
+
+def test_stt_model_region_defaults(monkeypatch):
+    for k, v in {
+        "GEMINI_API_KEY": "g", "GOOGLE_APPLICATION_CREDENTIALS": "/c.json",
+        "REDIS_URL": "redis://x", "MONGODB_URI": "mongodb://x",
+        "LIVEKIT_URL": "wss://x", "LIVEKIT_API_KEY": "k", "LIVEKIT_API_SECRET": "s",
+    }.items():
+        monkeypatch.setenv(k, v)
+    s = Settings()
+    assert s.stt_model == "chirp_3"
+    assert s.stt_location == "asia-southeast1"
+    assert s.interview_languages == ["en-IN", "en-US"]

@@ -142,14 +142,16 @@ async def entrypoint(ctx: JobContext):
 
     session = AgentSession(
         stt=google.STT(
-            # Proven config from the prior production app.py: STT V2 streaming,
-            # model "latest_long" in the "global" location. global avoids the
-            # cross-region (India→us-central1) round trip that made chirp_2 ~4s,
-            # AND allows multi-language recognition (en-IN + en-US), which the
-            # regional chirp_2 endpoints do not.
+            # chirp_3 in a regional endpoint (default asia-southeast1) — empirically
+            # far more accurate on Indian-accented English than latest_long/global
+            # (verified streaming on real fixtures) while still supporting the
+            # en-IN+en-US multi-language requirement. Model/region are config knobs
+            # (chirp models reject multi-language in us-central1 and don't exist in
+            # "global", so both must be set together — see config.py).
             languages=s.interview_languages,
-            model="latest_long",
-            location="global",
+            model=s.stt_model,
+            location=s.stt_location,
+            spoken_punctuation=False,
             interim_results=True,
         ),
         llm=google.LLM(
