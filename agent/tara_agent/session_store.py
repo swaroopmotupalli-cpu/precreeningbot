@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 class SessionNotFound(Exception):
     pass
@@ -12,6 +12,11 @@ class SessionBlob:
     resume_text: str
     jd_text: str
     max_questions: int
+    recruiter_id: str = ""
+    js_id: str = ""
+    # Asked about live too (system prompt), but NOT required for the
+    # coverage-based early-end check — only must-have (`skills`) is required.
+    good_to_have_skills: list[str] = field(default_factory=list)
 
 async def load_session(redis, session_id: str) -> SessionBlob:
     raw = await redis.get(f"session:{session_id}")
@@ -22,4 +27,6 @@ async def load_session(redis, session_id: str) -> SessionBlob:
         contest_id=d["contestId"], candidate_id=d["candidateId"],
         skills=d["skills"], resume_text=d["resumeText"],
         jd_text=d["jdText"], max_questions=d.get("maxQuestions", 12),
+        recruiter_id=d.get("recruiterId", ""), js_id=d.get("jsId", ""),
+        good_to_have_skills=d.get("goodToHaveSkills", []),
     )

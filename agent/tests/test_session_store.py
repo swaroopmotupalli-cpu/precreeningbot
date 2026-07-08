@@ -18,3 +18,30 @@ async def test_load_session_parses_blob(redis):
 async def test_missing_session_raises(redis):
     with pytest.raises(SessionNotFound):
         await load_session(redis, "nope")
+
+async def test_blob_carries_recruiter_and_js_ids(redis):
+    await redis.set("session:s1", json.dumps({
+        "contestId": "c1", "candidateId": "u1", "skills": ["Python"],
+        "resumeText": "r", "jdText": "j", "maxQuestions": 5,
+        "recruiterId": "rec1", "jsId": "js1",
+    }))
+    blob = await load_session(redis, "s1")
+    assert blob.recruiter_id == "rec1"
+    assert blob.js_id == "js1"
+
+async def test_blob_defaults_good_to_have_skills_to_empty(redis):
+    await redis.set("session:s1", json.dumps({
+        "contestId": "c1", "candidateId": "u1", "skills": ["Python"],
+        "resumeText": "r", "jdText": "j", "maxQuestions": 5,
+    }))
+    blob = await load_session(redis, "s1")
+    assert blob.good_to_have_skills == []
+
+async def test_blob_carries_good_to_have_skills(redis):
+    await redis.set("session:s1", json.dumps({
+        "contestId": "c1", "candidateId": "u1", "skills": ["Python"],
+        "resumeText": "r", "jdText": "j", "maxQuestions": 5,
+        "goodToHaveSkills": ["Docker", "Kubernetes"],
+    }))
+    blob = await load_session(redis, "s1")
+    assert blob.good_to_have_skills == ["Docker", "Kubernetes"]

@@ -13,6 +13,7 @@ preStop drain hook, and Prometheus ServiceMonitor).
 | `agent-deployment.yaml` | `tara-agent` Deployment — the Python LiveKit worker (`python -m tara_agent.worker start`). Exposes Prometheus metrics on port 9091 (`metrics`). |
 | `backend-deployment.yaml` | `tara-backend` Deployment — the Node backend (`POST /sessions`) on port 3000. |
 | `services.yaml` | `tara-backend` ClusterIP Service (port 3000) + `tara-agent-metrics` headless Service (port 9091) for per-pod metric scraping. |
+| `scorer-deployment.yaml` | `tara-scorer` Deployment — the Node async scorer (`node src/scorer/index.js`) consuming `tara:score:queue` from Redis. Backend image, no HTTP ports, 2 replicas; future KEDA scaling on queue `LLEN`. |
 | `keda-scaledobject.yaml` | KEDA `ScaledObject` targeting the `tara-agent` Deployment by name. Scales on `sum(active_sessions)` (NEVER CPU) via the Prometheus scaler, `threshold: 12` (= `SESSIONS_PER_POD_TARGET`). Warm floor `minReplicaCount: 2`, guardrail `maxReplicaCount: 20`, `pollingInterval: 10`, `cooldownPeriod: 300`, fast scale-up / slow scale-down behavior (`T_react < T_drain`). |
 | `pdb.yaml` | `PodDisruptionBudget` (`minAvailable: 1`, selects `app: tara-agent`) — voluntary disruptions can't drop live-session pods below the floor. |
 | `prometheus-scrape.yaml` | Prometheus-Operator `ServiceMonitor` selecting `tara-agent-metrics`, scraping port `metrics` path `/` every `5s` (= `METRIC_SCRAPE_INTERVAL`). Includes a commented raw `prometheus.yml` `scrape_config` for operator-less clusters. |

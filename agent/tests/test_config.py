@@ -13,6 +13,7 @@ def test_settings_load_from_env(monkeypatch):
     assert s.gemini_model == "gemini-3.1-flash-lite"
     assert s.interview_languages == ["en-IN", "en-US"]
     assert s.max_questions == 12
+    assert s.end_debounce_seconds == 6.0
     assert s.say_timeout_seconds == 20.0
 
 def test_settings_missing_required_raises(monkeypatch):
@@ -87,3 +88,15 @@ def test_reconnect_grace_must_be_under_lease(monkeypatch):
         monkeypatch.setenv(k, v)
     with pytest.raises(Exception):
         Settings()
+
+def test_stt_model_region_defaults(monkeypatch):
+    for k, v in {
+        "GEMINI_API_KEY": "g", "GOOGLE_APPLICATION_CREDENTIALS": "/c.json",
+        "REDIS_URL": "redis://x", "MONGODB_URI": "mongodb://x",
+        "LIVEKIT_URL": "wss://x", "LIVEKIT_API_KEY": "k", "LIVEKIT_API_SECRET": "s",
+    }.items():
+        monkeypatch.setenv(k, v)
+    s = Settings()
+    assert s.stt_model == "chirp_3"
+    assert s.stt_location == "asia-southeast1"
+    assert s.interview_languages == ["en-IN", "en-US"]

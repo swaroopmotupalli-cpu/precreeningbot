@@ -52,6 +52,10 @@ from tara_agent.latency import LatencyCollector
 from tara_agent.interview_agent import InterviewAgent
 from tara_agent.lifecycle import SessionLifecycle
 from tara_agent.metrics_export import TaraMetrics
+from tara_agent.persistence import end_interview
+
+async def _noop_say():
+    return None
 
 log = logging.getLogger("tara.worker")
 
@@ -83,7 +87,9 @@ async def entrypoint(ctx: JobContext):
     }
 
     redis = aioredis.from_url(s.redis_url, decode_responses=True)
-    mongo_col = AsyncIOMotorClient(s.mongodb_uri)["tara"]["aiInterview"]
+    # Transcript persists to the Marketplace ATS DB (same DB the scorer reads
+    # from and writes recruiterAddProfiles/auditTrail to — NOT a separate "tara" db).
+    mongo_col = AsyncIOMotorClient(s.mongodb_uri)["Marketplace"]["aiInterview"]
 
     # --- Admission limiter -------------------------------------------------------
     from tara_agent.limiter import Limiter, Caps
@@ -140,18 +146,24 @@ async def entrypoint(ctx: JobContext):
 
     session = AgentSession(
         stt=google.STT(
-            # Proven config from the prior production app.py: STT V2 streaming,
-            # model "latest_long" in the "global" location. global avoids the
-            # cross-region (India→us-central1) round trip that made chirp_2 ~4s,
-            # AND allows multi-language recognition (en-IN + en-US), which the
-            # regional chirp_2 endpoints do not.
+            # chirp_3 in a regional endpoint (default asia-southeast1) — empirically
+            # far more accurate on Indian-accented English than latest_long/global
+            # (verified streaming on real fixtures) while still supporting the
+            # en-IN+en-US multi-language requirement. Model/region are config knobs
+            # (chirp models reject multi-language in us-central1 and don't exist in
+            # "global", so both must be set together — see config.py).
             languages=s.interview_languages,
-            model="latest_long",
-            location="global",
+            model=s.stt_model,
+            location=s.stt_location,
+            spoken_punctuation=False,
             interim_results=True,
         ),
         llm=google.LLM(
             model=s.gemini_model,
+            # Gemini Developer API key — the plugin otherwise only reads
+            # GOOGLE_API_KEY from env; we carry it as GEMINI_API_KEY, so pass it
+            # explicitly. (STT/TTS authenticate separately via the SA JSON / ADC.)
+            api_key=s.gemini_api_key,
             # LLM latency note: base TTFT from a local India laptop to the global
             # Gemini Developer API is ~1.3s. Vertex AI in-region (the analog of the
             # STT region fix) is NOT available on this project, so the Developer API
@@ -172,11 +184,13 @@ async def entrypoint(ctx: JobContext):
         ),
         turn_detection=turn_detector,
         # Cap how long we wait after speech stops before committing the turn.
-        # The semantic detector still decides; these bound its endpointing wait
-        # (default max was hitting 3.0s when the model was unsure). 0.3s floor
-        # for confident ends, 1.5s ceiling for uncertain ones.
-        min_endpointing_delay=0.3,
-        max_endpointing_delay=1.5,
+        # The semantic detector still decides; these bound its endpointing wait.
+        # Was 0.3s/1.5s — too tight: candidates pausing mid-answer to think got
+        # cut off and counted as a completed turn (fragmenting one answer into
+        # several, inflating the question count and ending interviews early).
+        # Widened to tolerate normal thinking-pauses without being cut off.
+        min_endpointing_delay=0.7,
+        max_endpointing_delay=2.5,
     )
 
     # ---------------------------------------------------------------------------
@@ -221,10 +235,14 @@ async def entrypoint(ctx: JobContext):
         blob=blob,
         transcript=transcript,
         coverage=coverage,
-        mongo_write_fn=lambda doc: mongo_col.insert_one(doc),
         settings=s,
-        # Natural end routes through the single unified teardown (which owns
-        # release). limiter=None so the agent's _on_end_and_release does NOT
+        # Natural end just says goodbye then routes through the single
+        # unified teardown below, which persists the transcript, force-ends
+        # the room, and owns release — the SAME path every other end reason
+        # (candidate disconnect, job shutdown, ...) already uses, so a
+        # manually- or abnormally-ended interview is saved and scored too,
+        # not just one that reaches the question cap naturally.
+        # limiter=None so the agent's _on_end_and_release does NOT
         # double-release — teardown is the sole release site.
         on_end=lambda: asyncio.create_task(lifecycle.teardown("natural_end")),
         limiter=None,
@@ -234,35 +252,27 @@ async def entrypoint(ctx: JobContext):
     # Capture Tara's spoken lines into the transcript as they are committed.
     # ConversationItemAddedEvent.item is ChatMessage | AgentHandoff; we only
     # care about assistant ChatMessages.
+    #
+    # LiveKit Agents 1.6.4 evidence (agent_activity.py lines 2573-2611 and
+    # 3012-3038): when speech_handle.interrupted is True, the framework sets
+    # forwarded_text to playback_ev.synchronized_transcript (the
+    # audio-synchronized spoken boundary from TTS playout) BEFORE creating the
+    # ChatMessage and emitting conversation_item_added. So item.text_content
+    # is ALREADY the correctly-truncated, actually-spoken text for a barge-in
+    # — and item.interrupted (ChatMessage.interrupted, chat_context.py line
+    # 321) already tells us so. Both are passed straight into the SAME
+    # on_tara_line call in ONE handler — a prior version used a SECOND,
+    # independently-scheduled handler to overwrite the line afterward, which
+    # raced against this one (two unordered fire-and-forget tasks) and could
+    # clobber the wrong (previous) transcript line. One handler, one append,
+    # no race.
     @session.on("conversation_item_added")
     def _on_item(ev):
         item = ev.item
         if getattr(item, "role", None) == "assistant":
-            asyncio.create_task(agent.on_tara_line(item.text_content or ""))
-
-    # Barge-in audit: when the candidate interrupts Tara mid-sentence, truncate
-    # Tara's stored line to only what was actually spoken.
-    #
-    # LiveKit Agents 1.6.4 evidence (agent_activity.py lines 2573-2611 and
-    # 3012-3038):
-    #   When speech_handle.interrupted is True, the framework sets forwarded_text
-    #   to playback_ev.synchronized_transcript (the audio-synchronized spoken
-    #   boundary from TTS playout) BEFORE creating the ChatMessage and emitting
-    #   conversation_item_added. Therefore item.text_content on an interrupted
-    #   assistant item already contains ONLY the words actually spoken — not the
-    #   full intended sentence.
-    #
-    # The ChatMessage.interrupted field (chat_context.py line 321) is set to
-    #   speech_handle.interrupted, so gating on it reliably identifies barge-in
-    #   items. Passing item.text_content (already truncated by the framework)
-    #   to on_interruption overwrites the line on_tara_line recorded (which
-    #   also used text_content from the same event — belt-and-suspenders: both
-    #   see the same spoken boundary, so the truncation is idempotent).
-    @session.on("conversation_item_added")
-    def _on_item_audit(ev):
-        item = ev.item
-        if getattr(item, "role", None) == "assistant" and getattr(item, "interrupted", False):
-            asyncio.create_task(agent.on_interruption(item.text_content or ""))
+            asyncio.create_task(agent.on_tara_line(
+                item.text_content or "", interrupted=getattr(item, "interrupted", False)
+            ))
 
     # Signal "Tara finished her turn" to any participant (the latency harness
     # waits on this so it never publishes the next answer over Tara's speech).
@@ -300,12 +310,41 @@ async def entrypoint(ctx: JobContext):
         print("LATENCY_BREAKDOWN_P50=" + payload, flush=True)
 
     # --- Unified, exactly-once teardown -------------------------------------
+    # This is the ONE place the transcript gets persisted + scored, for EVERY
+    # end reason (question cap reached, candidate disconnected/clicked "End
+    # interview", job shutdown, ...) — not just the natural-end path. Any
+    # goodbye speech (natural end only) already happened in
+    # InterviewAgent._wrap_up before this fires, so say_fn here is a no-op.
     async def _teardown(reason: str):
         log.info("teardown reason=%s", reason)
         _flush_breakdown()                       # latency breakdown, once-guarded
+        await end_interview(
+            say_fn=_noop_say,
+            transcript_store=transcript,
+            mongo_write_fn=lambda doc: mongo_col.insert_one(doc),
+            room=ctx.room.name,
+            contest_id=blob.contest_id,
+            candidate_id=blob.candidate_id,
+            recruiter_id=blob.recruiter_id,
+            js_id=blob.js_id,
+            enqueue_fn=lambda room: redis.lpush("tara:score:queue", room),
+            resume_text=blob.resume_text,
+            jd_text=blob.jd_text,
+            skills=blob.skills,
+            say_timeout=s.say_timeout_seconds,
+            write_timeout=s.mongo_write_timeout_seconds,
+            on_finally=lambda: None,
+            offpath_retry_attempts=s.offpath_retry_attempts,
+            retry_base_delay_ms=s.retry_base_delay_ms,
+            retry_max_delay_ms=s.retry_max_delay_ms,
+        )
         await limiter.release(ctx.room.name)     # idempotent (ZSCORE-guarded Lua)
         done.set()
         _DRAIN.unregister()
+        # Force-end the room now that everything is persisted — the candidate
+        # doesn't have to click "End interview" themselves once Tara is done,
+        # and this is a harmless no-op if they already left on their own.
+        ctx.delete_room()
 
     async def _resume():
         # Candidate reconnected within grace: welcome back + re-ask the in-flight
@@ -412,4 +451,19 @@ async def entrypoint(ctx: JobContext):
 
 
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+    # Load the repo-root .env so the LiveKit worker bootstrap (which reads
+    # LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET from os.environ BEFORE
+    # entrypoint runs) finds them when launched from agent/. No-op in k8s where
+    # env comes from ConfigMap/Secret and no .env file exists; load_dotenv does
+    # NOT override variables already set in the environment.
+    import os
+    from pathlib import Path
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+    # Named agent → EXPLICIT dispatch: this worker only joins rooms whose token
+    # requests this agent_name (the backend embeds it in the candidate token's
+    # roomConfig). Must match AGENT_NAME on the backend (both default "tara_agent").
+    cli.run_app(WorkerOptions(
+        entrypoint_fnc=entrypoint,
+        agent_name=os.environ.get("AGENT_NAME", "tara_agent"),
+    ))

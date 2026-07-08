@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tara — Interview Flow Tester</title>
+<!-- LiveKit browser SDK (UMD → window.LivekitClient). CDN, no build step. -->
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --muted:#8b949e;
+          --tara:#1f6feb; --cand:#238636; --warn:#d29922; --err:#f85149; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+         background:var(--bg); color:var(--fg); }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:17px; margin:0; font-weight:600; }
+  .wrap { display:grid; grid-template-columns:380px 1fr; gap:0; height:calc(100vh - 53px); }
+  .col { padding:20px; overflow:auto; }
+  .col.left { border-right:1px solid var(--line); }
+  label { display:block; font-size:12px; color:var(--muted); margin:12px 0 4px; text-transform:uppercase; letter-spacing:.04em; }
+  input, textarea { width:100%; background:var(--bg); color:var(--fg); border:1px solid var(--line);
+                    border-radius:6px; padding:8px 10px; font:inherit; }
+  textarea { resize:vertical; min-height:54px; }
+  .row { display:flex; gap:10px; }
+  .row > div { flex:1; }
+  button { font:inherit; font-weight:600; border:0; border-radius:6px; padding:10px 16px; cursor:pointer; }
+  #start { background:var(--cand); color:#fff; width:100%; margin-top:18px; }
+  #end { background:var(--err); color:#fff; display:none; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .pill { display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px; font-weight:600; }
+  .pill.idle{background:#21262d;color:var(--muted);} .pill.live{background:var(--cand);color:#fff;}
+  .pill.speaking{background:var(--tara);color:#fff;} .pill.turn{background:var(--warn);color:#000;}
+  .pill.err{background:var(--err);color:#fff;}
+  #sid { font-family:ui-monospace,Menlo,monospace; font-size:12px; color:var(--muted); word-break:break-all; }
+  #log { font-family:ui-monospace,Menlo,monospace; font-size:12px; color:var(--muted); white-space:pre-wrap;
+         margin-top:14px; max-height:170px; overflow:auto; border-top:1px solid var(--line); padding-top:10px; }
+  .transcript { display:flex; flex-direction:column; gap:10px; }
+  .turn-line { padding:10px 14px; border-radius:10px; max-width:80%; }
+  .turn-line.tara { background:#132f5e; align-self:flex-start; }
+  .turn-line.candidate { background:#15351f; align-self:flex-end; }
+  .turn-line .who { font-size:11px; color:var(--muted); margin-bottom:2px; text-transform:uppercase; }
+  .empty { color:var(--muted); text-align:center; margin-top:60px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎙️ Tara — Interview Flow Tester</h1>
+  <span id="status" class="pill idle">idle</span>
+  <span id="mic" class="pill idle">🎤 mic —</span>
+  <span id="sid"></span>
+</header>
+<div class="wrap">
+  <div class="col left">
+    <form id="form" onsubmit="return false">
+      <p style="color:var(--muted);font-size:12px;margin:0 0 6px">JD + resume are pulled from the Marketplace DB using these IDs.</p>
+      <label>Contest ID (ObjectId)</label>
+      <input id="contestId" value="68931362af8c8e846afbe0fb" />
+      <label>Jobseeker ID (ObjectId)</label>
+      <input id="jsId" value="6895bd580d790be21e0a95e1" />
+      <label>Recruiter ID (ObjectId)</label>
+      <input id="recruiterId" value="68bfc07706bd7917f89b4262" />
+      <label>Max questions</label>
+      <input id="maxQuestions" type="number" value="4" min="1" max="20" />
+      <button id="start">Start interview</button>
+      <button id="mute" style="display:none;background:#21262d;color:var(--fg);width:100%;margin-top:8px">🔇 Mute mic</button>
+      <button id="end">End interview</button>
+    </form>
+    <div id="log"></div>
+  </div>
+  <div class="col right">
+    <div id="transcript" class="transcript"><div class="empty">Transcript will appear here once the interview starts.</div></div>
+  </div>
+</div>
+
+<script>
+const LK = window.LivekitClient;
+const $ = (id) => document.getElementById(id);
+let room = null;
+let micMuted = false;
+
+async function toggleMic() {
+  if (!room) return;
+  micMuted = !micMuted;
+  try {
+    await room.localParticipant.setMicrophoneEnabled(!micMuted);
+    $("mute").textContent = micMuted ? "🎤 Unmute mic" : "🔇 Mute mic";
+    log(micMuted ? "Microphone muted." : "Microphone unmuted.");
+  } catch (e) {
+    micMuted = !micMuted; // revert on failure
+    log("Mute toggle failed: " + e.message);
+  }
+}
+
+function setStatus(text, cls) { const s = $("status"); s.textContent = text; s.className = "pill " + cls; }
+function log(msg) { const el = $("log"); el.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`; el.scrollTop = el.scrollHeight; }
+function clearTranscript() {
+  $("transcript").innerHTML = "";
+  if (typeof bubbles === "object") Object.keys(bubbles).forEach((k) => delete bubbles[k]);
+  if (typeof lastFinal === "object") { lastFinal.tara = { text: null, el: null }; lastFinal.candidate = { text: null, el: null }; }
+}
+
+// Live mic-level meter: proves the browser is actually capturing your voice.
+// If this stays "mic 0%" while you talk, the problem is your mic/permission/device,
+// not the worker. If it moves but Tara doesn't respond, the issue is server-side.
+let micPeakSeen = false;
+function startMicMeter() {
+  try {
+    let micTrack = null;
+    room.localParticipant.trackPublications.forEach((p) => {
+      if (p.track && p.kind === "audio" && p.track.mediaStreamTrack) micTrack = p.track;
+    });
+    if (!micTrack) { log("mic meter: no local audio track found"); return; }
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const src = ac.createMediaStreamSource(new MediaStream([micTrack.mediaStreamTrack]));
+    const analyser = ac.createAnalyser(); analyser.fftSize = 512;
+    src.connect(analyser);
+    const buf = new Uint8Array(analyser.frequencyBinCount);
+    const el = $("mic");
+    function tick() {
+      if (!room) return;
+      if (micMuted) { el.textContent = "🔇 muted"; el.className = "pill err"; requestAnimationFrame(tick); return; }
+      analyser.getByteTimeDomainData(buf);
+      let peak = 0; for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
+      const pct = Math.min(100, Math.round((peak / 128) * 200)); // amplify for visibility
+      el.textContent = "🎤 mic " + pct + "%";
+      el.className = "pill " + (pct > 8 ? "live" : "idle");
+      if (pct > 8 && !micPeakSeen) { micPeakSeen = true; log("mic meter: capturing audio ✅ (you can be heard by the browser)"); }
+      requestAnimationFrame(tick);
+    }
+    tick();
+    log("mic meter started — speak and watch the 🎤 indicator.");
+  } catch (e) { log("mic meter error: " + e.message); }
+}
+
+// Live transcript: one bubble per speaker, updated in place while a segment is non-final.
+const bubbles = {}; // id -> element
+// LiveKit can deliver the SAME utterance as two transcription streams with
+// different ids (interim + final), producing duplicate bubbles. Track each
+// speaker's last finalized turn so we can drop an exact duplicate.
+const lastFinal = { tara: { text: null, el: null }, candidate: { text: null, el: null } };
+const norm = (t) => (t || "").trim().toLowerCase().replace(/\s+/g, " ");
+function upsertSegment(speaker, id, text, isFinal) {
+  let el = bubbles[id];
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "turn-line " + (speaker === "tara" ? "tara" : "candidate");
+    el.innerHTML = `<div class="who">${speaker === "tara" ? "Tara" : "You"}</div><div class="txt"></div>`;
+    $("transcript").appendChild(el);
+    bubbles[id] = el;
+  }
+  el.querySelector(".txt").textContent = text;
+  el.style.opacity = isFinal ? "1" : "0.7";
+  if (isFinal) {
+    const lf = lastFinal[speaker] || { text: null, el: null };
+    if (lf.el && lf.el !== el && norm(text) === lf.text) {
+      el.remove(); delete bubbles[id];   // duplicate of the previous final turn
+      return;
+    }
+    lastFinal[speaker] = { text: norm(text), el };
+  }
+  $("transcript").scrollTop = $("transcript").scrollHeight;
+}
+
+async function startInterview() {
+  $("start").disabled = true;
+  clearTranscript();
+  setStatus("creating session…", "idle");
+
+  const body = {
+    contestId: $("contestId").value.trim(),
+    jsId: $("jsId").value.trim(),
+    recruiterId: $("recruiterId").value.trim(),
+    maxQuestions: Number($("maxQuestions").value) || 4,
+  };
+
+  let resp, data;
+  try {
+    resp = await fetch("/sessions", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    data = await resp.json();
+  } catch (e) {
+    setStatus("backend unreachable", "err"); log("POST /sessions failed: " + e.message); $("start").disabled = false; return;
+  }
+
+  if (resp.status === 404) {
+    setStatus("not found", "err");
+    log("Lookup failed (" + (data.code || "404") + "): " + data.error + " — check the contestId/jsId exist in Marketplace.");
+    $("start").disabled = false; return;
+  }
+  if (resp.status === 503) {
+    if (data.bucket) { setStatus("queued (cap full): " + data.bucket, "warn"); log("Admission rejected — bucket=" + data.bucket + " (limiter at capacity; retry shortly)."); }
+    else { setStatus("backend not ready", "err"); log("503: " + (data.error || "service unavailable")); }
+    $("start").disabled = false; return;
+  }
+  if (!resp.ok || !data.token) {
+    setStatus("session error", "err"); log("Unexpected /sessions response: " + JSON.stringify(data));
+    $("start").disabled = false; return;
+  }
+
+  $("sid").textContent = "session: " + data.sessionId;
+  log("Session created for " + (data.candidateName || "candidate") + " — role: " + (data.jobTitle || "?") + ". Connecting to LiveKit …");
+
+  room = new LK.Room({ adaptiveStream: true, dynacast: true });
+
+  // Tara's audio → attach + autoplay.
+  room.on(LK.RoomEvent.TrackSubscribed, (track) => {
+    if (track.kind === LK.Track.Kind.Audio) {
+      const el = track.attach(); el.autoplay = true; document.body.appendChild(el);
+      log("Subscribed to Tara's audio.");
+    }
+  });
+
+  // "tara_done" gate signal (topic "gate") → Tara finished, candidate's turn.
+  room.on(LK.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
+    if (topic === "gate") { setStatus("your turn — answer now", "turn"); }
+  });
+
+  // Agent speaking/listening state (drives the Tara-speaking indicator).
+  room.on(LK.RoomEvent.ActiveSpeakersChanged, (speakers) => {
+    const taraSpeaking = speakers.some((p) => p.identity !== room.localParticipant.identity);
+    if (taraSpeaking) setStatus("Tara is speaking…", "speaking");
+  });
+
+  room.on(LK.RoomEvent.Disconnected, () => {
+    setStatus("interview ended", "idle");
+    log("Disconnected. If the interview ended naturally, the scorer will pick up session " + data.sessionId + ".");
+    $("end").style.display = "none"; $("mute").style.display = "none"; micMuted = false;
+    $("start").disabled = false;
+  });
+
+  // SIDs of the candidate's own (local) published tracks — a transcription whose
+  // transcribed track is one of these is the CANDIDATE's speech; anything else is Tara.
+  function localTrackSids() {
+    const s = new Set();
+    room.localParticipant.trackPublications.forEach((p) => { if (p.trackSid) s.add(p.trackSid); });
+    return s;
+  }
+  function speakerFor(attrs, participantInfo) {
+    const trackId = attrs && attrs["lk.transcribed_track_id"];
+    if (trackId && localTrackSids().has(trackId)) return "candidate";
+    // The agent forwards BOTH transcriptions, so senderIdentity is the agent for
+    // both; trackId above is the reliable signal. Fall back to sender identity.
+    if (participantInfo && participantInfo.identity === room.localParticipant.identity) return "candidate";
+    return "tara";
+  }
+
+  // Live transcript via LiveKit text streams (topic lk.transcription) — SINGLE handler.
+  let transcriptionWired = false;
+  try {
+    room.registerTextStreamHandler("lk.transcription", async (reader, participantInfo) => {
+      const attrs = (reader.info && reader.info.attributes) || {};
+      const speaker = speakerFor(attrs, participantInfo);
+      const id = (reader.info && reader.info.id) || attrs["lk.segment_id"] || ("seg-" + Date.now());
+      log("transcript[" + speaker + "] track=" + (attrs["lk.transcribed_track_id"] || "-"));
+      let full = "";
+      for await (const chunk of reader) { full += chunk; upsertSegment(speaker, id, full, false); }
+      upsertSegment(speaker, id, full, true);
+    });
+    transcriptionWired = true;
+    log("Transcription handler registered (text stream).");
+  } catch (e) { log("Text-stream transcription unavailable: " + e.message); }
+
+  // Fallback ONLY if the text-stream API isn't present (older SDKs) — avoids double bubbles.
+  if (!transcriptionWired && LK.RoomEvent.TranscriptionReceived) {
+    room.on(LK.RoomEvent.TranscriptionReceived, (segments, participant) => {
+      const speaker = participant && participant.identity !== room.localParticipant.identity ? "tara" : "candidate";
+      for (const s of segments) upsertSegment(speaker, s.id, s.text, s.final);
+    });
+    log("Transcription handler registered (event fallback).");
+  }
+
+  try {
+    await room.connect(data.livekitUrl, data.token);
+    log("Connected to room " + room.name + ". Enabling microphone…");
+    await room.localParticipant.setMicrophoneEnabled(true);
+    log("Microphone live. Tara should greet you shortly.");
+    setStatus("connected — listening", "live");
+    $("end").style.display = "inline-block";
+    micMuted = false;
+    $("mute").textContent = "🔇 Mute mic";
+    $("mute").style.display = "block";
+    startMicMeter();
+  } catch (e) {
+    setStatus("connect/mic failed", "err");
+    log("Connect or mic error: " + e.message + " (check LIVEKIT_URL reachability and grant mic permission).");
+    $("start").disabled = false;
+  }
+}
+
+async function endInterview() {
+  if (room) { log("Leaving room…"); await room.disconnect(); }
+}
+
+$("start").addEventListener("click", startInterview);
+$("end").addEventListener("click", endInterview);
+$("mute").addEventListener("click", toggleMic);
+if (!LK) { setStatus("LiveKit SDK failed to load", "err"); log("Could not load livekit-client from CDN — check network."); }
+</script>
+</body>
+</html>

@@ -23,24 +23,22 @@ async def test_assemble_sorts_even_if_storage_unordered(redis):
     lines = await ts.assemble()
     assert [l["seq"] for l in lines] == [1, 5]
 
-async def test_truncate_last_replaces_partial_line(redis):
-    ts = TranscriptStore(redis, room="r3")
-    await ts.append("candidate", "answer")
-    await ts.append("tara", "This is a very long question that was")
-    result = await ts.truncate_last("tara", "This is a very long question")
-    assert result is True
+async def test_append_with_interrupted_flags_the_line_inline(redis):
+    """Interrupted state is set in the SAME append the caller already knows
+    it for — no separate later correction step (a prior version used a
+    second `truncate_last` call for this, which raced against the original
+    append as two independent fire-and-forget tasks and could clobber the
+    wrong, previous line — see interview_agent.on_tara_line)."""
+    ts = TranscriptStore(redis, room="r6")
+    await ts.append("tara", "Could you explain how you would specifically handle", interrupted=True)
     lines = await ts.assemble()
-    assert lines[-1]["text"] == "This is a very long question"
-    assert len(lines) == 2
+    assert lines[-1]["interrupted"] is True
 
-async def test_truncate_last_returns_false_when_speaker_absent(redis):
-    ts = TranscriptStore(redis, room="r5")
-    await ts.append("candidate", "answer")
-    result = await ts.truncate_last("tara", "x")
-    assert result is False
+async def test_append_does_not_set_interrupted_flag_by_default(redis):
+    ts = TranscriptStore(redis, room="r7")
+    await ts.append("tara", "A complete question?")
     lines = await ts.assemble()
-    assert len(lines) == 1
-    assert lines[0]["speaker"] == "candidate"
+    assert "interrupted" not in lines[-1]
 
 async def test_ttl_is_set(redis):
     ts = TranscriptStore(redis, room="r4", ttl_seconds=7200)

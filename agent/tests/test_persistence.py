@@ -74,3 +74,31 @@ async def test_mongo_write_retries_transient():
     )
     assert calls["n"] == 2       # retried the transient write once
     assert finally_called["v"]   # finally still runs exactly once
+
+
+async def test_end_interview_persists_ids_and_enqueues():
+    written = {}
+    async def mongo_write(doc):
+        written.update(doc); return {"ok": 1}
+    enqueued = []
+    async def enqueue(room):
+        enqueued.append(room)
+
+    class _T:
+        async def assemble(self):
+            return [{"seq": 0, "speaker": "tara", "text": "hi"}]
+
+    from tara_agent.persistence import end_interview
+    await end_interview(
+        say_fn=lambda: __import__("asyncio").sleep(0),
+        transcript_store=_T(), mongo_write_fn=mongo_write,
+        room="room1", contest_id="c1", candidate_id="u1",
+        recruiter_id="rec1", js_id="js1", enqueue_fn=enqueue,
+        resume_text="r", jd_text="j", skills=["Python"],
+        say_timeout=1.0, write_timeout=1.0, on_finally=lambda: None,
+    )
+    assert written["recruiterId"] == "rec1" and written["jsId"] == "js1"
+    assert enqueued == ["room1"]   # enqueued once, after the write
+    assert written["resumeText"] == "r"
+    assert written["jdText"] == "j"
+    assert written["skills"] == ["Python"]
