@@ -11,6 +11,7 @@ dependencies = [
   "pydantic-settings~=2.2",
   "google-genai~=1.0",
   "prometheus-client~=0.20",
+  "python-dotenv~=1.0",
 ]
 [project.optional-dependencies]
 dev = ["pytest~=8.0", "pytest-asyncio~=0.23", "fakeredis~=2.21", "mongomock-motor~=0.0.29", "redislite~=6.2"]
