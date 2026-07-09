@@ -13,14 +13,14 @@ class Settings(BaseSettings):
     livekit_url: str
     livekit_api_key: str
     livekit_api_secret: str
-    interview_languages: list[str] = ["en-IN", "en-US"]
+    interview_languages: list[str] = ["en-IN"]
     # STT model/region. chirp_3 in asia-southeast1 is markedly more accurate on
     # Indian-accented English than latest_long, AND supports multi-language
     # (en-IN+en-US) — chirp models reject multi-language in us-central1, and
     # chirp_2/chirp_3 do not exist in "global". Tune stt_location to the region
     # nearest the deployment (chirp_3 multilingual regions incl. asia-southeast1).
     stt_model: str = "chirp_3"
-    stt_location: str = "asia-southeast1"
+    stt_location: str = "asia-south1"
     tts_voice: str = "en-IN-Chirp3-HD-Erinome"
     max_questions: int = 12
     # After the question cap (or full coverage) is reached, wait this long with
