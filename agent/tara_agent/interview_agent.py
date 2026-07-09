@@ -83,6 +83,7 @@ class InterviewAgent(Agent):
         on_end,
         limiter=None,
         room: str = "",
+        enqueue_fn=None,
     ):
         super().__init__(instructions=instructions)
         self._blob = blob
