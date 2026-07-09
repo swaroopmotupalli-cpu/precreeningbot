@@ -1,7 +1,7 @@
 # agent/tests/test_interview_agent_interruption.py
 import pytest
 from livekit.agents import StopResponse
-from tara_agent.interview_agent import InterviewAgent
+from tara_agent.interview_agent import InterviewAgent, _is_clarification_request
 
 
 class _FakeTranscript:
@@ -163,3 +163,105 @@ async def test_on_user_turn_completed_survives_a_permanent_append_failure():
     # this test is only exercising append-failure resilience, not the ending path.
     agent = _agent(t, max_questions=100, settings=_RetryableSettings(), skills=["python"])
     await agent.on_user_turn_completed(None, _Msg("answer 1"))  # must not raise
+
+
+def test_is_clarification_request_matches_short_asks_for_elaboration():
+    assert _is_clarification_request("Can you elaborate on that?") is True
+    assert _is_clarification_request("Sorry, pardon?") is True
+    assert _is_clarification_request("What do you mean by scalability") is True
+    assert _is_clarification_request("Could you please repeat that question again for me") is True
+
+
+def test_is_clarification_request_does_not_match_substantive_answers():
+    # Long answer that happens to contain "explain" — must NOT be flagged,
+    # or a real new question asked right after would be wrongly skipped.
+    long_answer = (
+        "Let me explain how I implemented the caching layer using Redis "
+        "and handled invalidation across multiple services in production"
+    )
+    assert _is_clarification_request(long_answer) is False
+    assert _is_clarification_request("I am not sure, but I think it scales well") is False
+    assert _is_clarification_request("") is False
+
+
+async def test_rephrase_after_clarification_request_is_not_counted_as_a_new_question():
+    """Regression: asking Tara to elaborate on the CURRENT question used to
+    bump the question count as if it were a new question — exhausting the
+    cap on a rephrase and cutting off the real final question before it was
+    ever asked."""
+    t = _FakeTranscript()
+    # Non-empty, uncovered skill so should_end() doesn't trip on the first
+    # turn — this test is only exercising the rephrase-vs-new-question logic.
+    agent = _agent(t, max_questions=4, skills=["aws"])
+    await agent.on_tara_line("Could you tell me about your AWS experience?")
+    assert agent._questions_asked == 1
+    await agent.on_user_turn_completed(None, _Msg("Can you elaborate on that?"))
+    assert agent._expecting_rephrase is True
+    await agent.on_tara_line("Sure — I mean, how have you used AWS services in production?")
+    assert agent._questions_asked == 1  # rephrase of Q1, not a new question
+    assert agent._expecting_rephrase is False
+    # A genuinely new question afterward still counts normally.
+    await agent.on_tara_line("Moving on, how do you handle CI/CD?")
+    assert agent._questions_asked == 2
+
+
+def test_is_clarification_request_matches_a_longer_wrapped_request():
+    """Regression: a real request wrapped in a fuller sentence ("Can you
+    elaborate me this question? I mean, repeat the question once again." —
+    13 words) used to be rejected by a too-tight word cap, silently letting
+    the rephrase that followed get miscounted as a new question."""
+    assert _is_clarification_request(
+        "Can you elaborate me this question? I mean, repeat the question once again."
+    ) is True
+
+
+def test_is_clarification_request_excludes_self_volunteered_elaboration():
+    # The candidate elaborating on THEIR OWN answer, unprompted, must not be
+    # treated as asking Tara to clarify the question.
+    assert _is_clarification_request(
+        "Let me elaborate on how I designed the caching layer"
+    ) is False
+
+
+async def test_clarification_on_the_final_question_still_gets_a_rephrase_not_a_goodbye():
+    """Regression: once the question cap was reached, a clarification request
+    on that last question used to get a goodbye instead of an actual
+    rephrase — should_end() was checked before the clarification check."""
+    t = _FakeTranscript()
+    agent = _agent(t, max_questions=1, skills=["aws"])
+    await agent.on_tara_line("Could you tell me about your AWS experience?")
+    assert agent._questions_asked == 1  # cap already reached
+    # Must NOT raise StopResponse / schedule the wrap-up — Tara should reply.
+    await agent.on_user_turn_completed(None, _Msg("Sorry, can you elaborate on that question again?"))
+    assert agent._expecting_rephrase is True
+    assert agent._end_debounce_task is None
+    assert agent._ending is False
+
+
+async def test_rephrase_detected_by_similarity_even_when_request_is_unrecognizable():
+    """Regression: STT can mangle the candidate's actual words beyond
+    recognition (e.g. "elaborate" heard as "allow me"), so the phrase-based
+    detector never fires. Tara's rephrase still reuses most of the same key
+    words as the question it's rephrasing, which this catches independently."""
+    t = _FakeTranscript()
+    agent = _agent(t, max_questions=4, skills=["aws"])
+    original = (
+        "Since you mentioned using Redux Toolkit, how do you go about defining "
+        "the types or interfaces for your React component props to ensure type safety?"
+    )
+    await agent.on_tara_line(original)
+    assert agent._questions_asked == 1
+    # STT garbled the clarification request into something unrecognizable —
+    # _expecting_rephrase never gets set.
+    await agent.on_user_turn_completed(None, _Msg("Can you allow me? Let me regarding this question once again"))
+    assert agent._expecting_rephrase is False
+    rephrase = (
+        "No problem. When you are building React components with TypeScript, how do "
+        "you go about defining the types or interfaces for your props to make sure "
+        "everything stays type-safe?"
+    )
+    await agent.on_tara_line(rephrase)
+    assert agent._questions_asked == 1  # still recognized as a rephrase, by content
+    # A genuinely new question (different topic) is not caught by similarity.
+    await agent.on_tara_line("Moving on, how do you structure your Express routes?")
+    assert agent._questions_asked == 2
