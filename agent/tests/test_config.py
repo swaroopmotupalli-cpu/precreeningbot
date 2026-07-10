@@ -97,6 +97,6 @@ def test_stt_model_region_defaults(monkeypatch):
     }.items():
         monkeypatch.setenv(k, v)
     s = Settings()
-    assert s.stt_model == "chirp_3"
+    assert s.stt_model == "chirp_2"
     assert s.stt_location == "asia-southeast1"
-    assert s.interview_languages == ["en-IN", "en-US"]
+    assert s.interview_languages == ["en-IN"]

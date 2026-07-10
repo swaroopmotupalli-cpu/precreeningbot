@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     # (en-IN+en-US) — chirp models reject multi-language in us-central1, and
     # chirp_2/chirp_3 do not exist in "global". Tune stt_location to the region
     # nearest the deployment (chirp_3 multilingual regions incl. asia-southeast1).
-    stt_model: str = "chirp_3"
-    stt_location: str = "asia-south1"
+    stt_model: str = "chirp_2"
+    stt_location: str = "asia-southeast1"
     tts_voice: str = "en-IN-Chirp3-HD-Erinome"
     max_questions: int = 12
     # After the question cap (or full coverage) is reached, wait this long with
