@@ -10,10 +10,10 @@ def redis():
 async def test_load_session_parses_blob(redis):
     await redis.set("session:s1", json.dumps({
         "contestId": "c1", "candidateId": "u1", "skills": ["python", "sql"],
-        "resumeText": "resume", "jdText": "jd", "maxQuestions": 10,
+        "resumeText": "resume", "jdText": "jd",
     }))
     blob = await load_session(redis, "s1")
-    assert blob == SessionBlob("c1", "u1", ["python", "sql"], "resume", "jd", 10)
+    assert blob == SessionBlob("c1", "u1", ["python", "sql"], "resume", "jd")
 
 async def test_missing_session_raises(redis):
     with pytest.raises(SessionNotFound):
@@ -22,7 +22,7 @@ async def test_missing_session_raises(redis):
 async def test_blob_carries_recruiter_and_js_ids(redis):
     await redis.set("session:s1", json.dumps({
         "contestId": "c1", "candidateId": "u1", "skills": ["Python"],
-        "resumeText": "r", "jdText": "j", "maxQuestions": 5,
+        "resumeText": "r", "jdText": "j",
         "recruiterId": "rec1", "jsId": "js1",
     }))
     blob = await load_session(redis, "s1")
@@ -32,7 +32,7 @@ async def test_blob_carries_recruiter_and_js_ids(redis):
 async def test_blob_defaults_good_to_have_skills_to_empty(redis):
     await redis.set("session:s1", json.dumps({
         "contestId": "c1", "candidateId": "u1", "skills": ["Python"],
-        "resumeText": "r", "jdText": "j", "maxQuestions": 5,
+        "resumeText": "r", "jdText": "j",
     }))
     blob = await load_session(redis, "s1")
     assert blob.good_to_have_skills == []
@@ -40,8 +40,27 @@ async def test_blob_defaults_good_to_have_skills_to_empty(redis):
 async def test_blob_carries_good_to_have_skills(redis):
     await redis.set("session:s1", json.dumps({
         "contestId": "c1", "candidateId": "u1", "skills": ["Python"],
-        "resumeText": "r", "jdText": "j", "maxQuestions": 5,
+        "resumeText": "r", "jdText": "j",
         "goodToHaveSkills": ["Docker", "Kubernetes"],
     }))
     blob = await load_session(redis, "s1")
     assert blob.good_to_have_skills == ["Docker", "Kubernetes"]
+
+async def test_blob_carries_candidate_name_and_job_title(redis):
+    await redis.set("session:s1", json.dumps({
+        "contestId": "c1", "candidateId": "u1", "skills": ["Python"],
+        "resumeText": "r", "jdText": "j",
+        "candidateName": "Ada Lovelace", "jobTitle": "Backend Engineer",
+    }))
+    blob = await load_session(redis, "s1")
+    assert blob.candidate_name == "Ada Lovelace"
+    assert blob.job_title == "Backend Engineer"
+
+async def test_blob_defaults_candidate_name_and_job_title_to_empty(redis):
+    await redis.set("session:s1", json.dumps({
+        "contestId": "c1", "candidateId": "u1", "skills": ["Python"],
+        "resumeText": "r", "jdText": "j",
+    }))
+    blob = await load_session(redis, "s1")
+    assert blob.candidate_name == ""
+    assert blob.job_title == ""

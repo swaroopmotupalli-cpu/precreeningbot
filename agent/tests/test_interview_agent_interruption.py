@@ -32,6 +32,7 @@ class _FakeSettings:
     retry_base_delay_ms = 1
     retry_max_delay_ms = 1
     end_debounce_seconds = 0.01  # keep tests fast
+    max_questions = 12
 
 
 class _RetryableSettings(_FakeSettings):
@@ -54,13 +55,15 @@ class _FlakyTranscript(_FakeTranscript):
 
 
 def _agent(transcript, max_questions=1, settings=None, skills=()):
-    blob = type("B", (), {"skills": list(skills), "max_questions": max_questions,
+    blob = type("B", (), {"skills": list(skills),
         "contest_id": "c", "candidate_id": "u", "recruiter_id": "r", "js_id": "j",
         "resume_text": "", "jd_text": ""})()
+    s = settings or _FakeSettings()
+    s.max_questions = max_questions  # should_end() reads the cap from settings, not the blob
     return InterviewAgent(
         instructions="x", blob=blob,
         transcript=transcript, coverage=_FakeCoverage(),
-        settings=settings or _FakeSettings(), on_end=lambda: None, limiter=None, room="room1",
+        settings=s, on_end=lambda: None, limiter=None, room="room1",
     )
 
 
@@ -89,7 +92,7 @@ class _Msg:
 async def test_hitting_cap_raises_stop_response_but_waits_before_ending():
     """The goodbye is NOT immediate — it waits for a quiet period so a
     candidate still mid-answer isn't cut off."""
-    agent = _agent(_FakeTranscript(), max_questions=1)
+    agent = _agent(_FakeTranscript(), max_questions=0)  # cap already reached — every turn hits it
     with pytest.raises(StopResponse):
         await agent.on_user_turn_completed(None, _Msg("answer 1"))
     assert agent._ending is False
@@ -102,7 +105,7 @@ async def test_turn_after_ending_still_raises_stop_response():
     """Regression: once the goodbye has been said, a later turn (e.g. the
     candidate says "continue" before the room actually disconnects) must
     NOT fall through to a normal reply — it must keep raising StopResponse."""
-    agent = _agent(_FakeTranscript(), max_questions=1)
+    agent = _agent(_FakeTranscript(), max_questions=0)  # cap already reached — every turn hits it
     with pytest.raises(StopResponse):
         await agent.on_user_turn_completed(None, _Msg("answer 1"))
     await agent._end_debounce_task
@@ -115,7 +118,7 @@ async def test_continued_answer_resets_the_wait_and_is_still_captured():
     """If the candidate keeps talking after the cap is hit, don't say goodbye
     yet — keep collecting their words into the transcript and wait again."""
     t = _FakeTranscript()
-    agent = _agent(t, max_questions=1)
+    agent = _agent(t, max_questions=0)  # cap already reached — every turn hits it
     with pytest.raises(StopResponse):
         await agent.on_user_turn_completed(None, _Msg("first part of the answer"))
     first_task = agent._end_debounce_task
@@ -265,3 +268,56 @@ async def test_rephrase_detected_by_similarity_even_when_request_is_unrecognizab
     # A genuinely new question (different topic) is not caught by similarity.
     await agent.on_tara_line("Moving on, how do you structure your Express routes?")
     assert agent._questions_asked == 2
+
+
+async def test_generic_interview_phrasing_does_not_cause_a_false_rephrase_match():
+    """Regression: two UNRELATED questions (MongoDB schema design, then a
+    later GraphQL question) share only generic interview boilerplate ("have",
+    "working", "with", "your", "projects") — that shared filler pushed
+    similarity over threshold and silently dropped the GraphQL question from
+    the count, even though the candidate gave it a real, distinct answer."""
+    t = _FakeTranscript()
+    agent = _agent(t, max_questions=12, skills=["mongodb", "graphql"])
+    await agent.on_tara_line(
+        "How have you approached schema design when working with MongoDB in your previous projects?"
+    )
+    assert agent._questions_asked == 1
+    await agent.on_tara_line(
+        "Have you had experience working with GraphQL for data fetching in any of your projects?"
+    )
+    assert agent._questions_asked == 2  # a genuinely new topic — must still count
+
+
+async def test_taras_own_concluding_statement_ends_the_session_without_a_second_goodbye():
+    """Regression: the LLM can decide to wrap up on its own judgment before
+    the code ever reaches the question cap — previously nothing reacted to
+    this, so the session just sat open until the candidate's client
+    eventually disconnected on its own."""
+    ended = {"v": False}
+    t = _FakeTranscript()
+    blob = type("B", (), {"skills": ["python"],
+        "contest_id": "c", "candidate_id": "u", "recruiter_id": "r", "js_id": "j",
+        "resume_text": "", "jd_text": ""})()
+    settings = _FakeSettings()
+    settings.max_questions = 12
+    agent = InterviewAgent(
+        instructions="x", blob=blob, transcript=t, coverage=_FakeCoverage(),
+        settings=settings, on_end=lambda: ended.__setitem__("v", True), limiter=None, room="room1",
+    )
+    await agent.on_tara_line("Could you tell me about your Python experience?")
+    assert agent._questions_asked == 1
+    await agent.on_tara_line(
+        "Thank you for your time today. This concludes our technical interview session. Have a great day."
+    )
+    assert agent._ending is True
+    assert ended["v"] is True
+
+
+async def test_ordinary_acknowledgment_does_not_trigger_a_premature_ending():
+    """The concluding-statement detector must stay narrow — an everyday
+    mid-interview acknowledgment must never be mistaken for Tara's goodbye."""
+    t = _FakeTranscript()
+    agent = _agent(t, max_questions=12, skills=["python"])
+    await agent.on_tara_line("Could you tell me about your Python experience?")
+    await agent.on_tara_line("Thank you for sharing that, moving on.")
+    assert agent._ending is False

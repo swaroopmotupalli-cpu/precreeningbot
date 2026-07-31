@@ -30,6 +30,16 @@ test("parseAnalysis aligns questions to qaPairs length + coerces (pairing itself
   expect(a.primarySkillsRatings[0].rating).toBe(1.2);
 });
 
+test("parseAnalysis captures a summarized answer per question when provided", () => {
+  const raw = JSON.stringify({
+    questions: [{ question: "What is your experience with Python?", answer: "3 years, mostly Django APIs." }],
+    overall_rating: 70, overall_evaluation: "ok", key_strengths: [], areas_for_improvement: [],
+    remarks: { communication: "3" }, primarySkillsRatings: [], secondarySkillsRatings: [], comment: "c",
+  });
+  const a = parseAnalysis(raw, [QA[0]], { mustHave: [], goodToHave: [] });
+  expect(a.questions[0].answer).toBe("3 years, mostly Django APIs.");
+});
+
 test("parseAnalysis clamps overall_rating to 0-100", () => {
   const raw = (rating) => JSON.stringify({
     questions: [], overall_rating: rating, overall_evaluation: "", key_strengths: [],
@@ -116,6 +126,19 @@ test("buildReport prefers the model's cleaned-up question wording over the raw i
     question: "How would you specifically handle element locators?",
     answer: "5 years of Python and Django.",
   });
+});
+
+test("buildReport prefers the model's summarized answer over the raw concatenated transcript text", () => {
+  const rawQA = [
+    { question: "Tell me about your React experience?", answer: "Um yeah so like I have worked I think maybe three years or so with React building dashboards and stuff." },
+  ];
+  const analysis = {
+    questions: [{ question: "Tell me about your React experience?", answer: "About 3 years of React experience, mainly building dashboards." }],
+    overall_rating: 70, overall_evaluation: "", key_strengths: [], areas_for_improvement: [],
+    remarks: { communication: "3" }, primarySkillsRatings: [], secondarySkillsRatings: [], comment: "",
+  };
+  const { report } = buildReport({ qaPairs: rawQA, analysis, jdText: "", resumeText: "", now: new Date(2026, 0, 1) });
+  expect(report.prescreeningreport.detailed_qa[0].answer).toBe("About 3 years of React experience, mainly building dashboards.");
 });
 
 test("buildReport falls back to the raw paired line when no reconstruction is provided", () => {

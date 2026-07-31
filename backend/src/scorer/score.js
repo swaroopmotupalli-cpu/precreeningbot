@@ -73,7 +73,7 @@ ${qa}
 
 Return JSON EXACTLY in this shape:
 {
-  "questions": [ { "question": "<the full, real interview question being answered>" } ],  // one object per question, IN ORDER (Q1 first)
+  "questions": [ { "question": "<the full, real interview question being answered>", "answer": "<2-3 sentence summary of what the candidate actually said>" } ],  // one object per question, IN ORDER (Q1 first)
   "overall_rating": <0-100 integer>,
   "overall_evaluation": "3-4 sentence summary of performance",
   "key_strengths": ["s1","s2","s3"],
@@ -83,7 +83,7 @@ Return JSON EXACTLY in this shape:
   "secondarySkillsRatings": [ {"skill":"<good-to-have>", "rating": <0-5>} ],
   "comment": "one-paragraph hiring recommendation"
 }
-Rules: "questions" MUST have exactly ${(qaPairs || []).length} items in order — do NOT merge, split, add, or drop items; each corresponds 1:1 to the numbered Q/A pair above. For each, restate the ACTUAL question cleanly (strip any leading acknowledgment, fix informal phrasing) without changing which pair it belongs to. "overall_rating" is a SINGLE holistic 0-100 score for the entire interview — do not average per-question scores; instead judge as a whole: did the candidate answer correctly, did the conversation cover BOTH the must-have and good-to-have skills listed above, and how well did they communicate throughout (communication = clarity and organization of their IDEAS, not speech-to-text quality). Rate ALL listed skills 0-5 based on evidence in the answers — 0 if a skill was never demonstrated or discussed, not as a penalty. remarks.communication is a STRING. All ratings/scores are NUMBERS. Write the entire report in English, translating any non-English fragments.`;
+Rules: "questions" MUST have exactly ${(qaPairs || []).length} items in order — do NOT merge, split, add, or drop items; each corresponds 1:1 to the numbered Q/A pair above. For each, restate the ACTUAL question cleanly (strip any leading acknowledgment, fix informal phrasing) without changing which pair it belongs to. For "answer", summarize in your OWN words what the candidate actually said (2-3 sentences) — preserve every concrete technical detail and their real position (tool names, approaches, numbers, examples); do NOT embellish, invent, or improve on what they said; if they said they didn't know or had no experience, state that plainly rather than softening it; ignore pure noise turns (e.g. "can you repeat that?") when summarizing — base the summary only on their substantive answer content. "overall_rating" is a SINGLE holistic 0-100 score for the entire interview — do not average per-question scores; instead judge as a whole: did the candidate answer correctly, did the conversation cover BOTH the must-have and good-to-have skills listed above, and how well did they communicate throughout (communication = clarity and organization of their IDEAS, not speech-to-text quality). Rate ALL listed skills 0-5 based on evidence in the answers — 0 if a skill was never demonstrated or discussed, not as a penalty. remarks.communication is a STRING. All ratings/scores are NUMBERS. Write the entire report in English, translating any non-English fragments.`;
 }
 
 function clampRating(n) {
@@ -100,12 +100,16 @@ function parseAnalysis(rawText, qaPairs, { mustHave, goodToHave }) {
     const r = JSON.parse(s.trim());
 
     // questions[] aligned to qaPairs length (pad/truncate, coerce) — pairing
-    // itself is already correct (deterministic), this only cleans wording.
+    // itself is already correct (deterministic), this only cleans wording
+    // and summarizes the answer; it never changes which pair is which.
     const q = Array.isArray(r.questions) ? r.questions : [];
     const questions = [];
     for (let i = 0; i < n; i++) {
       const item = q[i] || {};
-      questions.push({ question: item.question ? String(item.question).trim() : "" });
+      questions.push({
+        question: item.question ? String(item.question).trim() : "",
+        answer: item.answer ? String(item.answer).trim() : "",
+      });
     }
     if (r.remarks && r.remarks.communication != null) r.remarks.communication = String(r.remarks.communication);
     else r.remarks = { communication: "Not assessed." };
@@ -139,10 +143,12 @@ function buildReport({ qaPairs, analysis, jdText, resumeText, now, rawTranscript
   const v = verdict(analysis.overall_rating);
   const detailed_qa = (qaPairs || []).map((qa, i) => {
     const a = analysis.questions[i];
-    // Prefer the model's cleaned-up question wording; fall back to the raw
-    // paired line only if the model didn't provide one (e.g. fallback path).
+    // Prefer the model's cleaned-up question wording and summarized answer;
+    // fall back to the raw paired line only if the model didn't provide one
+    // (e.g. fallback path) — pairing itself is untouched either way.
     const question = (a && a.question) ? a.question : qa.question;
-    return { question, answer: qa.answer };
+    const answer = (a && a.answer) ? a.answer : qa.answer;
+    return { question, answer };
   });
   const report = {
     prescreeningreport: {

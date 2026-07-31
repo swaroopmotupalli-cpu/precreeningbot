@@ -41,6 +41,7 @@ with warnings.catch_warnings():
     from livekit.plugins.turn_detector.multilingual import MultilingualModel  # noqa: E402
 
 from tara_agent.drain import DrainController
+from tara_agent.log_context import session_log
 from tara_agent.config import get_settings
 from tara_agent.retry import retry_async
 from tara_agent.session_store import load_session
@@ -128,6 +129,9 @@ async def entrypoint(ctx: JobContext):
     # Convention: room name == session id stored in Redis.
     session_id = ctx.room.name
     blob = await load_session(redis, session_id)
+    # Prefixes every log line for this job with contest/js/recruiter ids, so
+    # console output can be traced back to a specific candidate at a glance.
+    job_log = session_log(log, blob)
 
     transcript = TranscriptStore(redis, ctx.room.name, s.transcript_ttl_seconds)
     coverage = CoverageTracker(
@@ -213,7 +217,7 @@ async def entrypoint(ctx: JobContext):
             pending["stt"] = m.transcription_delay
         elif isinstance(m, metrics.LLMMetrics):
             pending["ttft"] = m.ttft
-            log.info(
+            job_log.info(
                 "LLM_DIAG ttft=%.3f prompt_tokens=%s cached_tokens=%s completion=%s",
                 m.ttft, m.prompt_tokens, m.prompt_cached_tokens, m.completion_tokens,
             )
@@ -231,7 +235,7 @@ async def entrypoint(ctx: JobContext):
                 pending.clear()
 
     agent = InterviewAgent(
-        instructions=build_system_prompt(blob),
+        instructions=build_system_prompt(blob, s),
         blob=blob,
         transcript=transcript,
         coverage=coverage,
@@ -285,7 +289,7 @@ async def entrypoint(ctx: JobContext):
                 "tara_done", topic="gate", reliable=True
             )
         except Exception as e:  # never let signalling break the session
-            log.debug("tara_done publish failed: %s", e)
+            job_log.debug("tara_done publish failed: %s", e)
 
     @session.on("agent_state_changed")
     def _on_agent_state(ev):
@@ -307,7 +311,7 @@ async def entrypoint(ctx: JobContext):
             payload = json.dumps(latency.breakdown_p50())
         except Exception as e:  # empty collector (no turns) — report, don't crash
             payload = json.dumps({"error": "no_turns_recorded", "detail": str(e)})
-        log.info("LATENCY_BREAKDOWN_P50=%s", payload)
+        job_log.info("LATENCY_BREAKDOWN_P50=%s", payload)
         print("LATENCY_BREAKDOWN_P50=" + payload, flush=True)
 
     # --- Unified, exactly-once teardown -------------------------------------
@@ -317,7 +321,7 @@ async def entrypoint(ctx: JobContext):
     # goodbye speech (natural end only) already happened in
     # InterviewAgent._wrap_up before this fires, so say_fn here is a no-op.
     async def _teardown(reason: str):
-        log.info("teardown reason=%s", reason)
+        job_log.info("teardown reason=%s", reason)
         _flush_breakdown()                       # latency breakdown, once-guarded
         await end_interview(
             say_fn=_noop_say,
@@ -358,7 +362,7 @@ async def entrypoint(ctx: JobContext):
         try:
             await session.say(msg)
         except Exception as e:  # never let resume crash the session
-            log.warning("resume say failed: %s", e)
+            job_log.warning("resume say failed: %s", e)
 
     candidate_identity = {"v": None}
     lifecycle = SessionLifecycle(

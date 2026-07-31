@@ -10,6 +10,7 @@ import re
 from livekit.agents import Agent, StopResponse
 from tara_agent.coverage import CoverageTracker
 from tara_agent.interview import should_end
+from tara_agent.log_context import session_log
 from tara_agent.transcript import TranscriptStore
 from tara_agent.retry import retry_async
 
@@ -56,10 +57,24 @@ def _is_clarification_request(text: str) -> bool:
 # candidate's own request was never understood.
 _REPHRASE_SIMILARITY_THRESHOLD = 0.4
 _WORD_RE = re.compile(r"[a-z']+")
+# Regression: these appear in almost EVERY interview question regardless of
+# topic ("Have you had experience working with X in your projects?", "How
+# have you approached Y in your previous work?") — left in, they drown out
+# the actual topic words and made two UNRELATED questions (e.g. a MongoDB
+# schema question and a later GraphQL question) look similar enough to be
+# mistaken for a rephrase, silently dropping a real question from the count.
+_GENERIC_INTERVIEW_WORDS = frozenset({
+    "have", "your", "with", "working", "worked", "work", "works",
+    "projects", "project", "experience", "about", "tell", "using", "used",
+    "would", "could", "please", "typically", "approach", "approached",
+    "when", "what", "how", "had", "any", "been", "that", "this", "from",
+    "into", "does", "your've", "you're", "you've", "these", "those",
+})
 
 
 def _content_words(text):
-    return {w for w in _WORD_RE.findall((text or "").lower()) if len(w) > 3}
+    words = _WORD_RE.findall((text or "").lower())
+    return {w for w in words if len(w) > 3 and w not in _GENERIC_INTERVIEW_WORDS}
 
 
 def _is_rephrase_of(new_text, previous_text):
@@ -69,6 +84,21 @@ def _is_rephrase_of(new_text, previous_text):
     if not a or not b:
         return False
     return (len(a & b) / min(len(a), len(b))) >= _REPHRASE_SIMILARITY_THRESHOLD
+
+
+# The LLM can decide to wrap up on its own judgment before the code ever
+# forces it to (e.g. it feels the interview is "done" short of the question
+# cap) — without detecting this, the session just sits open after her
+# goodbye until the candidate's client eventually disconnects on its own.
+# Kept narrow and specific (requires "interview" alongside a closing word, or
+# the exact scripted closing phrase) so an ordinary mid-interview
+# acknowledgment like "Thank you for sharing that" never false-triggers this.
+_CONCLUDING_RE = re.compile(
+    r"\bconcludes (our|the|this) (technical )?interview\b|"
+    r"\bend of (the |our )?(technical )?interview\b|"
+    r"\bwe'?ll be in touch\b",
+    re.IGNORECASE,
+)
 
 
 class InterviewAgent(Agent):
@@ -87,6 +117,10 @@ class InterviewAgent(Agent):
     ):
         super().__init__(instructions=instructions)
         self._blob = blob
+        # Prefixes every log line from this session with contest/js/recruiter
+        # ids, so console output can be traced back to a specific candidate
+        # at a glance — see log_context.py.
+        self._log = session_log(log, blob)
         self._transcript = transcript
         self._coverage = coverage
         self._settings = settings
@@ -125,7 +159,7 @@ class InterviewAgent(Agent):
             )
             return True
         except Exception as e:
-            log.error(
+            self._log.error(
                 "failed to persist %s transcript line after retries "
                 "(will be missing from scoring): %s — text=%r",
                 speaker, e, text,
@@ -158,10 +192,7 @@ class InterviewAgent(Agent):
             # instead of letting her respond (previously: asking to elaborate
             # on the last question got a goodbye instead of a rephrase).
             return
-        covered = await self._coverage.covered()
-        if should_end(
-            covered, self._blob.skills, self._questions_asked, self._blob.max_questions
-        ):
+        if should_end(self._questions_asked, self._settings.max_questions):
             # Don't cut the candidate off mid-answer — this turn may just be
             # one fragment of a longer answer to the last question. Wait for
             # a genuine pause (no new candidate speech) before saying goodbye;
@@ -208,10 +239,25 @@ class InterviewAgent(Agent):
         """
         saved = await self._append_line("tara", text, interrupted=interrupted)
         if "?" not in text:
+            if not self._ending and _CONCLUDING_RE.search(text):
+                # She's already said her own goodbye out loud — don't script
+                # a SECOND one on top of it; just tear the session down.
+                self._log.info(
+                    "Tara concluded on her own at %d/%d questions — ending session",
+                    self._questions_asked, self._settings.max_questions,
+                )
+                self._ending = True
+                self._on_end_and_release()
             return
         is_rephrase = self._expecting_rephrase or _is_rephrase_of(text, self._last_counted_question)
         self._expecting_rephrase = False
         if is_rephrase:
+            # Not counted — a repeat/clarify/elaborate rephrase of the
+            # question already in progress, not a new one.
+            self._log.info(
+                "question NOT counted (rephrase) — still %d/%d: %r",
+                self._questions_asked, self._settings.max_questions, text,
+            )
             return
         # Only count it if it's actually recorded — if the write failed even
         # after retries, the scorer will never see this line as a pair
@@ -220,6 +266,10 @@ class InterviewAgent(Agent):
         if saved:
             self._questions_asked += 1
             self._last_counted_question = text
+            self._log.info(
+                "question %d/%d: %r",
+                self._questions_asked, self._settings.max_questions, text,
+            )
 
     def _on_end_and_release(self):
         """Schedules limiter.release (fire-and-scheduled — does not block the
@@ -252,5 +302,5 @@ class InterviewAgent(Agent):
                 timeout=self._settings.say_timeout_seconds,
             )
         except Exception as e:
-            log.warning("closing say failed/hung: %s", e)
+            self._log.warning("closing say failed/hung: %s", e)
         self._on_end_and_release()

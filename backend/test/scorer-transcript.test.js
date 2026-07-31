@@ -38,6 +38,58 @@ test("an interrupted Tara fragment is not treated as a new question boundary", (
   ]);
 });
 
+test("a rephrased question is merged into the current pair, not counted as a new one", () => {
+  // Regression: the live agent doesn't count a rephrase toward its question
+  // cap, but it still saves the rephrased line to the transcript like any
+  // other Tara line — buildQAPairs must independently recognize it too, or
+  // the final report ends up with more Q&A pairs than questions actually asked.
+  const lines = [
+    { seq: 0, speaker: "tara", text: "When you have analyzed data, what tools or methods have you used to visualize it?" },
+    { seq: 1, speaker: "candidate", text: "Would you tell me how many questions we have completed?" },
+    { seq: 2, speaker: "tara", text: "Could you please share what tools or methods you have used to visualize data?" },
+    { seq: 3, speaker: "candidate", text: "Yes, but I am not aware of this." },
+    { seq: 4, speaker: "tara", text: "How do you typically ensure data quality when integrating information?" },
+    { seq: 5, speaker: "candidate", text: "I have no idea about this." },
+  ];
+  expect(buildQAPairs(lines)).toEqual([
+    {
+      question: "Could you please share what tools or methods you have used to visualize data?",
+      answer: "Would you tell me how many questions we have completed? Yes, but I am not aware of this.",
+    },
+    { question: "How do you typically ensure data quality when integrating information?", answer: "I have no idea about this." },
+  ]);
+});
+
+test("generic interview phrasing shared between two unrelated questions does not cause a false merge", () => {
+  // Regression: a MongoDB schema question and a later GraphQL question share
+  // only generic interview boilerplate ("have", "working", "with", "your",
+  // "projects") — that shared filler pushed similarity over threshold and
+  // wrongly merged them, dropping a real, distinctly-answered question.
+  const lines = [
+    { seq: 0, speaker: "tara", text: "How have you approached schema design when working with MongoDB in your previous projects?" },
+    { seq: 1, speaker: "candidate", text: "I used embedded documents for one-to-few relationships." },
+    { seq: 2, speaker: "tara", text: "Have you had experience working with GraphQL for data fetching in any of your projects?" },
+    { seq: 3, speaker: "candidate", text: "Yes, I built a few resolvers for our API." },
+  ];
+  expect(buildQAPairs(lines)).toEqual([
+    { question: "How have you approached schema design when working with MongoDB in your previous projects?", answer: "I used embedded documents for one-to-few relationships." },
+    { question: "Have you had experience working with GraphQL for data fetching in any of your projects?", answer: "Yes, I built a few resolvers for our API." },
+  ]);
+});
+
+test("a genuinely new question on a different topic is not merged", () => {
+  const lines = [
+    { seq: 0, speaker: "tara", text: "Could you tell me about your React experience?" },
+    { seq: 1, speaker: "candidate", text: "I've built several dashboards." },
+    { seq: 2, speaker: "tara", text: "How do you handle database migrations?" },
+    { seq: 3, speaker: "candidate", text: "I use versioned migration scripts." },
+  ];
+  expect(buildQAPairs(lines)).toEqual([
+    { question: "Could you tell me about your React experience?", answer: "I've built several dashboards." },
+    { question: "How do you handle database migrations?", answer: "I use versioned migration scripts." },
+  ]);
+});
+
 test("mergeTurns merges consecutive same-speaker fragments into one turn each", () => {
   const lines = [
     { seq: 0, speaker: "tara", text: "Hi, could you tell me about your Java experience?" },
