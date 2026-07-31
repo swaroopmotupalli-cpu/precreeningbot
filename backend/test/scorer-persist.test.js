@@ -21,7 +21,7 @@ test("writes aiInterview + recruiterAddProfiles $set + auditTrail with valid ids
   const jsId = new ObjectId().toString();
   const contestId = new ObjectId().toString();
   const profileDoc = { jobseekerDetails: [{ jsId: new ObjectId(jsId), firstName: "Ada", lastName: "L" }] };
-  const inner = { interviewer: "Tara (Senior Technical Interviewer)", detailed_qa: [{ question: "q", answer: "a", score: 4, keywords: [] }] };
+  const inner = { interviewer: "Tara (Senior Technical Interviewer)", detailed_qa: [{ question: "q", answer: "a" }] };
   const out = await persistReport(mockDb(calls, profileDoc), {
     sessionId: "s1", contestId, candidateId: "u1", recruiterId, jsId,
     report: { prescreeningreport: inner },   // report === { prescreeningreport }

@@ -1,6 +1,6 @@
 // backend/src/scorer/index.js
 // Load repo-root .env for local runs (no-op in k8s; never overrides set vars).
-require("dotenv").config({ path: require("path").join(__dirname, "..", "..", ".env") });
+require("dotenv").config({ path: require("path").join(__dirname, "..", "..", "..", ".env") });
 const { MongoClient } = require("mongodb");
 const Redis = require("ioredis");
 const { runConsumer } = require("./queue");

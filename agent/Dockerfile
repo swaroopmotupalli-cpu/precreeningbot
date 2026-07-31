@@ -24,16 +24,22 @@ COPY agent/pyproject.toml ./
 COPY agent/tara_agent ./tara_agent
 RUN pip install -e .
 
-# Pre-download the turn-detector model at BUILD time so cold-start does not pay
-# the download penalty (protects the warm-pool / 45s-lease correctness dependency).
-# The download-files subcommand is real (verified: python -m tara_agent.worker --help
-# lists it via the legacy livekit.agents CLI).  The || fallback keeps the build
-# green if the HF Hub is unreachable in CI (model will lazy-load on first job).
-RUN python -m tara_agent.worker download-files || \
-    echo "WARN: download-files failed; model will lazy-load on first job"
-
-# Non-root user.
+# Non-root user — created BEFORE the model download below, so the download
+# lands in THIS user's HF cache (~/tara/.cache/huggingface), matching the
+# user CMD actually runs as. Downloading as root here (as a prior version of
+# this Dockerfile did) cached the model under /root, which the chown never
+# reached — the container then couldn't find the model again at runtime and
+# hard-failed (RuntimeError: could not find file "model_q8.onnx").
 RUN useradd -m -u 10001 tara && chown -R tara:tara /app
 USER tara
+
+# Pre-download the turn-detector model at BUILD time, as the SAME user the
+# worker runs as, so cold-start does not pay the download penalty (protects
+# the warm-pool / 45s-lease correctness dependency). The download-files
+# subcommand is real (verified: python -m tara_agent.worker --help lists it
+# via the legacy livekit.agents CLI). The || fallback keeps the build green
+# if the HF Hub is unreachable in CI (model will lazy-load on first job).
+RUN python -m tara_agent.worker download-files || \
+    echo "WARN: download-files failed; model will lazy-load on first job"
 
 CMD ["python", "-m", "tara_agent.worker", "start"]

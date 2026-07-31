@@ -109,6 +109,7 @@ async function loadContext(db, contestId, jsId) {
     jdText: composeJd(jd),
     resumeText,
     skills: cleanArr(jd.mustHaveSkills),
+    goodToHaveSkills: cleanArr(jd.goodToHave),
     candidateName,
   };
 }

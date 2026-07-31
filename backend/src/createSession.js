@@ -24,7 +24,8 @@ async function createSession(redis, tokenFactory, limiter, body, opts = {}) {
     recruiterId: body.recruiterId,
     candidateName: ctx.candidateName,
     jobTitle: ctx.jobTitle,
-    skills: ctx.skills,            // must-have skills → coverage tracking
+    skills: ctx.skills,             // must-have skills → coverage tracking
+    goodToHaveSkills: ctx.goodToHaveSkills, // asked about live too, but not required to end early
     resumeText: ctx.resumeText,
     jdText: ctx.jdText,
     maxQuestions: body.maxQuestions ?? 12,

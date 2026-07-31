@@ -63,9 +63,25 @@ test("loadContext fetches contest + jobseeker and composes context", async () =>
   const ctx = await loadContext(db, cId.toString(), jId.toString());
   expect(ctx.jobTitle).toBe("Dev");
   expect(ctx.skills).toEqual(["Python"]);
+  expect(ctx.goodToHaveSkills).toEqual([]);
   expect(ctx.jdText).toContain("Job Title: Dev");
   expect(ctx.resumeText).toContain("Candidate: Sam");
   expect(ctx.candidateName).toBe("Sam");
+});
+
+test("loadContext also derives goodToHaveSkills when present", async () => {
+  const cId = new ObjectId(), jId = new ObjectId();
+  const db = {
+    collection(name) {
+      if (name === "contests") return { findOne: async (q) => (q.contestId ? { details: { jobDetails: {
+        jobTitle: "Dev", mustHaveSkills: ["Python"], goodToHave: ["Docker", "Kubernetes"],
+      } } } : null) };
+      if (name === "jobSeekerProfile") return { findOne: async () => ({ personal_info: { firstName: "Sam" } }) };
+      return { findOne: async () => null };
+    },
+  };
+  const ctx = await loadContext(db, cId.toString(), jId.toString());
+  expect(ctx.goodToHaveSkills).toEqual(["Docker", "Kubernetes"]);
 });
 
 test("loadContext throws CONTEST_NOT_FOUND / JOBSEEKER_NOT_FOUND / INVALID_*", async () => {

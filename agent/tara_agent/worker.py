@@ -41,6 +41,7 @@ with warnings.catch_warnings():
     from livekit.plugins.turn_detector.multilingual import MultilingualModel  # noqa: E402
 
 from tara_agent.drain import DrainController
+from tara_agent.log_context import session_log
 from tara_agent.config import get_settings
 from tara_agent.retry import retry_async
 from tara_agent.session_store import load_session
@@ -52,6 +53,10 @@ from tara_agent.latency import LatencyCollector
 from tara_agent.interview_agent import InterviewAgent
 from tara_agent.lifecycle import SessionLifecycle
 from tara_agent.metrics_export import TaraMetrics
+from tara_agent.persistence import end_interview
+
+async def _noop_say():
+    return None
 
 log = logging.getLogger("tara.worker")
 
@@ -124,6 +129,9 @@ async def entrypoint(ctx: JobContext):
     # Convention: room name == session id stored in Redis.
     session_id = ctx.room.name
     blob = await load_session(redis, session_id)
+    # Prefixes every log line for this job with contest/js/recruiter ids, so
+    # console output can be traced back to a specific candidate at a glance.
+    job_log = session_log(log, blob)
 
     transcript = TranscriptStore(redis, ctx.room.name, s.transcript_ttl_seconds)
     coverage = CoverageTracker(
@@ -180,11 +188,13 @@ async def entrypoint(ctx: JobContext):
         ),
         turn_detection=turn_detector,
         # Cap how long we wait after speech stops before committing the turn.
-        # The semantic detector still decides; these bound its endpointing wait
-        # (default max was hitting 3.0s when the model was unsure). 0.3s floor
-        # for confident ends, 1.5s ceiling for uncertain ones.
-        min_endpointing_delay=0.3,
-        max_endpointing_delay=1.5,
+        # The semantic detector still decides; these bound its endpointing wait.
+        # Was 0.3s/1.5s — too tight: candidates pausing mid-answer to think got
+        # cut off and counted as a completed turn (fragmenting one answer into
+        # several, inflating the question count and ending interviews early).
+        # Widened to tolerate normal thinking-pauses without being cut off.
+        min_endpointing_delay=0.7,
+        max_endpointing_delay=2.5,
     )
 
     # ---------------------------------------------------------------------------
@@ -207,7 +217,7 @@ async def entrypoint(ctx: JobContext):
             pending["stt"] = m.transcription_delay
         elif isinstance(m, metrics.LLMMetrics):
             pending["ttft"] = m.ttft
-            log.info(
+            job_log.info(
                 "LLM_DIAG ttft=%.3f prompt_tokens=%s cached_tokens=%s completion=%s",
                 m.ttft, m.prompt_tokens, m.prompt_cached_tokens, m.completion_tokens,
             )
@@ -225,14 +235,18 @@ async def entrypoint(ctx: JobContext):
                 pending.clear()
 
     agent = InterviewAgent(
-        instructions=build_system_prompt(blob),
+        instructions=build_system_prompt(blob, s),
         blob=blob,
         transcript=transcript,
         coverage=coverage,
-        mongo_write_fn=lambda doc: mongo_col.insert_one(doc),
         settings=s,
-        # Natural end routes through the single unified teardown (which owns
-        # release). limiter=None so the agent's _on_end_and_release does NOT
+        # Natural end just says goodbye then routes through the single
+        # unified teardown below, which persists the transcript, force-ends
+        # the room, and owns release — the SAME path every other end reason
+        # (candidate disconnect, job shutdown, ...) already uses, so a
+        # manually- or abnormally-ended interview is saved and scored too,
+        # not just one that reaches the question cap naturally.
+        # limiter=None so the agent's _on_end_and_release does NOT
         # double-release — teardown is the sole release site.
         on_end=lambda: asyncio.create_task(lifecycle.teardown("natural_end")),
         limiter=None,
@@ -243,35 +257,27 @@ async def entrypoint(ctx: JobContext):
     # Capture Tara's spoken lines into the transcript as they are committed.
     # ConversationItemAddedEvent.item is ChatMessage | AgentHandoff; we only
     # care about assistant ChatMessages.
+    #
+    # LiveKit Agents 1.6.4 evidence (agent_activity.py lines 2573-2611 and
+    # 3012-3038): when speech_handle.interrupted is True, the framework sets
+    # forwarded_text to playback_ev.synchronized_transcript (the
+    # audio-synchronized spoken boundary from TTS playout) BEFORE creating the
+    # ChatMessage and emitting conversation_item_added. So item.text_content
+    # is ALREADY the correctly-truncated, actually-spoken text for a barge-in
+    # — and item.interrupted (ChatMessage.interrupted, chat_context.py line
+    # 321) already tells us so. Both are passed straight into the SAME
+    # on_tara_line call in ONE handler — a prior version used a SECOND,
+    # independently-scheduled handler to overwrite the line afterward, which
+    # raced against this one (two unordered fire-and-forget tasks) and could
+    # clobber the wrong (previous) transcript line. One handler, one append,
+    # no race.
     @session.on("conversation_item_added")
     def _on_item(ev):
         item = ev.item
         if getattr(item, "role", None) == "assistant":
-            asyncio.create_task(agent.on_tara_line(item.text_content or ""))
-
-    # Barge-in audit: when the candidate interrupts Tara mid-sentence, truncate
-    # Tara's stored line to only what was actually spoken.
-    #
-    # LiveKit Agents 1.6.4 evidence (agent_activity.py lines 2573-2611 and
-    # 3012-3038):
-    #   When speech_handle.interrupted is True, the framework sets forwarded_text
-    #   to playback_ev.synchronized_transcript (the audio-synchronized spoken
-    #   boundary from TTS playout) BEFORE creating the ChatMessage and emitting
-    #   conversation_item_added. Therefore item.text_content on an interrupted
-    #   assistant item already contains ONLY the words actually spoken — not the
-    #   full intended sentence.
-    #
-    # The ChatMessage.interrupted field (chat_context.py line 321) is set to
-    #   speech_handle.interrupted, so gating on it reliably identifies barge-in
-    #   items. Passing item.text_content (already truncated by the framework)
-    #   to on_interruption overwrites the line on_tara_line recorded (which
-    #   also used text_content from the same event — belt-and-suspenders: both
-    #   see the same spoken boundary, so the truncation is idempotent).
-    @session.on("conversation_item_added")
-    def _on_item_audit(ev):
-        item = ev.item
-        if getattr(item, "role", None) == "assistant" and getattr(item, "interrupted", False):
-            asyncio.create_task(agent.on_interruption(item.text_content or ""))
+            asyncio.create_task(agent.on_tara_line(
+                item.text_content or "", interrupted=getattr(item, "interrupted", False)
+            ))
 
     # Signal "Tara finished her turn" to any participant (the latency harness
     # waits on this so it never publishes the next answer over Tara's speech).
@@ -283,7 +289,7 @@ async def entrypoint(ctx: JobContext):
                 "tara_done", topic="gate", reliable=True
             )
         except Exception as e:  # never let signalling break the session
-            log.debug("tara_done publish failed: %s", e)
+            job_log.debug("tara_done publish failed: %s", e)
 
     @session.on("agent_state_changed")
     def _on_agent_state(ev):
@@ -305,16 +311,45 @@ async def entrypoint(ctx: JobContext):
             payload = json.dumps(latency.breakdown_p50())
         except Exception as e:  # empty collector (no turns) — report, don't crash
             payload = json.dumps({"error": "no_turns_recorded", "detail": str(e)})
-        log.info("LATENCY_BREAKDOWN_P50=%s", payload)
+        job_log.info("LATENCY_BREAKDOWN_P50=%s", payload)
         print("LATENCY_BREAKDOWN_P50=" + payload, flush=True)
 
     # --- Unified, exactly-once teardown -------------------------------------
+    # This is the ONE place the transcript gets persisted + scored, for EVERY
+    # end reason (question cap reached, candidate disconnected/clicked "End
+    # interview", job shutdown, ...) — not just the natural-end path. Any
+    # goodbye speech (natural end only) already happened in
+    # InterviewAgent._wrap_up before this fires, so say_fn here is a no-op.
     async def _teardown(reason: str):
-        log.info("teardown reason=%s", reason)
+        job_log.info("teardown reason=%s", reason)
         _flush_breakdown()                       # latency breakdown, once-guarded
+        await end_interview(
+            say_fn=_noop_say,
+            transcript_store=transcript,
+            mongo_write_fn=lambda doc: mongo_col.insert_one(doc),
+            room=ctx.room.name,
+            contest_id=blob.contest_id,
+            candidate_id=blob.candidate_id,
+            recruiter_id=blob.recruiter_id,
+            js_id=blob.js_id,
+            enqueue_fn=lambda room: redis.lpush("tara:score:queue", room),
+            resume_text=blob.resume_text,
+            jd_text=blob.jd_text,
+            skills=blob.skills,
+            say_timeout=s.say_timeout_seconds,
+            write_timeout=s.mongo_write_timeout_seconds,
+            on_finally=lambda: None,
+            offpath_retry_attempts=s.offpath_retry_attempts,
+            retry_base_delay_ms=s.retry_base_delay_ms,
+            retry_max_delay_ms=s.retry_max_delay_ms,
+        )
         await limiter.release(ctx.room.name)     # idempotent (ZSCORE-guarded Lua)
         done.set()
         _DRAIN.unregister()
+        # Force-end the room now that everything is persisted — the candidate
+        # doesn't have to click "End interview" themselves once Tara is done,
+        # and this is a harmless no-op if they already left on their own.
+        ctx.delete_room()
 
     async def _resume():
         # Candidate reconnected within grace: welcome back + re-ask the in-flight
@@ -327,7 +362,7 @@ async def entrypoint(ctx: JobContext):
         try:
             await session.say(msg)
         except Exception as e:  # never let resume crash the session
-            log.warning("resume say failed: %s", e)
+            job_log.warning("resume say failed: %s", e)
 
     candidate_identity = {"v": None}
     lifecycle = SessionLifecycle(

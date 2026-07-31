@@ -37,6 +37,7 @@ test("derives JD/resume/skills from Marketplace and writes the blob", async () =
   expect(blob.candidateId).toBe(blob.jsId);          // jobseeker is the candidate
   expect(blob.candidateName).toBe("Ada Lovelace");
   expect(blob.skills).toEqual(["React", "TypeScript"]); // must-have skills → coverage
+  expect(blob.goodToHaveSkills).toEqual(["Next.js"]);
   expect(blob.jdText).toContain("Job Title: Frontend Dev");
   expect(blob.resumeText).toContain("Candidate: Ada Lovelace");
   expect(blob.resumeText).toContain("Skills: JavaScript, React, Node");

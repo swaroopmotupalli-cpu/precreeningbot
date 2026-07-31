@@ -13,6 +13,7 @@ def test_settings_load_from_env(monkeypatch):
     assert s.gemini_model == "gemini-3.1-flash-lite"
     assert s.interview_languages == ["en-IN", "en-US"]
     assert s.max_questions == 12
+    assert s.end_debounce_seconds == 6.0
     assert s.say_timeout_seconds == 20.0
 
 def test_settings_missing_required_raises(monkeypatch):
@@ -96,6 +97,6 @@ def test_stt_model_region_defaults(monkeypatch):
     }.items():
         monkeypatch.setenv(k, v)
     s = Settings()
-    assert s.stt_model == "chirp_3"
+    assert s.stt_model == "chirp_2"
     assert s.stt_location == "asia-southeast1"
-    assert s.interview_languages == ["en-IN", "en-US"]
+    assert s.interview_languages == ["en-IN"]

@@ -59,9 +59,8 @@
       <input id="jsId" value="6895bd580d790be21e0a95e1" />
       <label>Recruiter ID (ObjectId)</label>
       <input id="recruiterId" value="68bfc07706bd7917f89b4262" />
-      <label>Max questions</label>
-      <input id="maxQuestions" type="number" value="4" min="1" max="20" />
       <button id="start">Start interview</button>
+      <button id="mute" style="display:none;background:#21262d;color:var(--fg);width:100%;margin-top:8px">🔇 Mute mic</button>
       <button id="end">End interview</button>
     </form>
     <div id="log"></div>
@@ -75,6 +74,20 @@
 const LK = window.LivekitClient;
 const $ = (id) => document.getElementById(id);
 let room = null;
+let micMuted = false;
+
+async function toggleMic() {
+  if (!room) return;
+  micMuted = !micMuted;
+  try {
+    await room.localParticipant.setMicrophoneEnabled(!micMuted);
+    $("mute").textContent = micMuted ? "🎤 Unmute mic" : "🔇 Mute mic";
+    log(micMuted ? "Microphone muted." : "Microphone unmuted.");
+  } catch (e) {
+    micMuted = !micMuted; // revert on failure
+    log("Mute toggle failed: " + e.message);
+  }
+}
 
 function setStatus(text, cls) { const s = $("status"); s.textContent = text; s.className = "pill " + cls; }
 function log(msg) { const el = $("log"); el.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`; el.scrollTop = el.scrollHeight; }
@@ -103,6 +116,7 @@ function startMicMeter() {
     const el = $("mic");
     function tick() {
       if (!room) return;
+      if (micMuted) { el.textContent = "🔇 muted"; el.className = "pill err"; requestAnimationFrame(tick); return; }
       analyser.getByteTimeDomainData(buf);
       let peak = 0; for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
       const pct = Math.min(100, Math.round((peak / 128) * 200)); // amplify for visibility
@@ -154,7 +168,6 @@ async function startInterview() {
     contestId: $("contestId").value.trim(),
     jsId: $("jsId").value.trim(),
     recruiterId: $("recruiterId").value.trim(),
-    maxQuestions: Number($("maxQuestions").value) || 4,
   };
 
   let resp, data;
@@ -209,7 +222,8 @@ async function startInterview() {
   room.on(LK.RoomEvent.Disconnected, () => {
     setStatus("interview ended", "idle");
     log("Disconnected. If the interview ended naturally, the scorer will pick up session " + data.sessionId + ".");
-    $("end").style.display = "none"; $("start").disabled = false;
+    $("end").style.display = "none"; $("mute").style.display = "none"; micMuted = false;
+    $("start").disabled = false;
   });
 
   // SIDs of the candidate's own (local) published tracks — a transcription whose
@@ -260,6 +274,9 @@ async function startInterview() {
     log("Microphone live. Tara should greet you shortly.");
     setStatus("connected — listening", "live");
     $("end").style.display = "inline-block";
+    micMuted = false;
+    $("mute").textContent = "🔇 Mute mic";
+    $("mute").style.display = "block";
     startMicMeter();
   } catch (e) {
     setStatus("connect/mic failed", "err");
@@ -274,6 +291,7 @@ async function endInterview() {
 
 $("start").addEventListener("click", startInterview);
 $("end").addEventListener("click", endInterview);
+$("mute").addEventListener("click", toggleMic);
 if (!LK) { setStatus("LiveKit SDK failed to load", "err"); log("Could not load livekit-client from CDN — check network."); }
 </script>
 </body>

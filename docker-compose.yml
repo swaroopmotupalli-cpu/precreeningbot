@@ -1,0 +1,77 @@
+# Build/run from the REPO ROOT: docker compose up --build
+#
+# MongoDB (Atlas) and LiveKit (LiveKit Cloud) are external managed services —
+# reached via MONGODB_URI / LIVEKIT_* in .env, not containerized here.
+# Redis is the only stateful dependency we run ourselves (transcript store,
+# score queue, admission limiter).
+#
+# Three of our own processes share the backend image (different CMD):
+#   backend -> node src/server.js       (API + candidate test UI)
+#   scorer  -> node src/scorer/index.js (tara:score:queue consumer)
+# and the agent has its own image:
+#   agent   -> python -m tara_agent.worker start (LiveKit job worker)
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # No host port published — the other services reach this over the
+    # compose network at redis:6379, and the host already has its own
+    # standalone tara-redis container bound to 6379.
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "${PORT:-8085}:8085"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  scorer:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    command: ["node", "src/scorer/index.js"]
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      # Overrides the relative filename in .env — the key file is bind-mounted
+      # below rather than baked into the image (no secrets in the image).
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp-credentials.json
+    volumes:
+      - ./agent/ai-interview-474711-66d01b1aeacb.json:/run/secrets/gcp-credentials.json:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis-data:

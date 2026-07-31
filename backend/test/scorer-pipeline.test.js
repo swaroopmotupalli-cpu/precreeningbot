@@ -28,7 +28,8 @@ test("happy path scores and persists", async () => {
     },
   };
   const gemini = async () => JSON.stringify({
-    questions: [{ score: 4, keywords: ["intro"] }], // 1 Q&A pair built from the transcript
+    questions: [{ question: "Q?" }], // 1:1 with the deterministically-built qaPairs
+    overall_rating: 64,
     overall_evaluation: "x", key_strengths: [], areas_for_improvement: [],
     remarks: { communication: "ok" }, primarySkillsRatings: [], secondarySkillsRatings: [], comment: "c",
   });
@@ -37,7 +38,8 @@ test("happy path scores and persists", async () => {
   expect(writes).toContain("aiInterview");
   // the rich report (with detailed_qa) is what gets persisted
   const pr = aiDocs[0].report.prescreeningreport;
-  expect(pr.detailed_qa[0]).toMatchObject({ question: "Q?", answer: "A", score: 4 });
+  expect(pr.detailed_qa[0]).toEqual({ question: "Q?", answer: "A" });
+  expect(pr.transcript).toEqual([{ speaker: "tara", text: "Q?" }, { speaker: "user", text: "A" }]);
   expect(pr.candidate_details.job_description).toBe("JD");
-  expect(out.overall_score).toBe(4);
+  expect(out.overall_score).toBe(64);
 });
